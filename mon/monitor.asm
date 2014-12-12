@@ -11,27 +11,22 @@
 z80
 name 'CTMPv10'
 
-CPU_SPEED equ 2457600
+
+; include definition file for KIMP1 computer
+include kimp1def.inc
+
+
 UART_BAUDRATE equ 9600
 UART_PRESCALE equ 1
-UART_DIV_VAL equ $00FF ; (CPU_SPEED/UART_PRESCALE)/UART_BAUDRATE - 1
+UART_DIV_VAL equ (CPU_SPEED/UART_PRESCALE)/UART_BAUDRATE - 1
 
 TERM_LF equ $0A
 
 MON_PROMPT equ $3E ; the '>' char
+
 MON_COM_RUN equ $72 ; the 'r' character
 MON_COM_LOAD equ $6C ; the 'l' character
-
-IO_UART_COM equ $00
-IO_UART_DAT equ $01
-
-IO_PIT_C0   equ $20
-IO_PIT_C1   equ $21
-IO_PIT_C2   equ $22
-IO_PIT_CTRL equ $23
-
-IO_CCR equ $40
-IO_PCR equ $60
+MON_COM_VERSION equ $76 ; the 'v' character
 
 org $0000
 
@@ -96,6 +91,10 @@ readChar:
     
     in A,(IO_UART_DAT) ; read in data byte
     
+if TERM_ENABLE_ECHO
+    call printChar
+endif
+    
     ret
     
 
@@ -125,37 +124,43 @@ readString_end:
 
     
 monitorStart:
-    ; perform an IO-RESET before intitalizing peripherals
-    in A, (IO_PCR)
-    or A, $02 ; set IO-RESET bit to one
-    out (IO_PCR),A
+    ; inititalize CCR and perform an IO-RESET before intitalizing peripherals
+    ld A, (1 << BIT_IO_RESET); set only IO-RESET bit to one
+    out (IO_CCR),A
     nop ; keep the IO-RESET line high for at least 6 clock pulses
     nop
     nop
-    and A, $FD ; clear IO-RESET bit
-    out (IO_PCR),A
-    ; IO-Devices are now reset
+    ld A, 0 ; clear IO-RESET bit
+    out (IO_CCR),A
+    ; CCR is now intitalized and IO-Devices are reset
     
     ; PIT 2 is connected to UART, so set it up for baud rate generation
     ld A, $84 ;10000100  set counter 2 in mode 2, binary counting
     out (IO_PIT_CTRL), A
-    
     ; write divider value to counter
     ld A, high UART_DIV_VAL
     ld B, low UART_DIV_VAL
     out (IO_PIT_C2), A
     out (IO_PIT_C2), B
+    ; registers for counter are set. now we can gate the counter
+    in A,(IO_CCR)
+    or (1 << BIT_C2_GATE)
+    out (IO_CCR), A ; C2 is now counting
     
     ; write mode byte to UART (first command byte after reset)
     ld A, $4D; 01001110  8 data bits, 1 stop bit, no parity, 1 times prescaler
-    out (IO_UART_COM),A
-    
-    ld A, $05 ; enable receiver and transmitter
+    out (IO_UART_COM),A 
+    ; enable receiver and transmitter
+    ld A, (1 << BIT_TXEN) | (1 << BIT_RXEN)
     out (IO_UART_COM), A
+    
+    ; reset TCC
+    xor A,A ; set A to zero
+    out (IO_TCC),A
     
     ; IO-Devices are now initialized
     
-    
+monitor_welcome:
     ld HL, str_welcome ; print welcome message
     call printString
     
@@ -163,8 +168,9 @@ monitorPromt_loop:
     ld A, MON_PROMPT ; print input promt
     call printChar
     
-    
+    ld HL, ROM_END ; this is where we want to store the read bytes
     call readString ; read user input
+    
     ; process user input
     ld A,(HL) ; load fist byte entered
     inc HL ; move HL to next byte
@@ -180,27 +186,92 @@ monitorPromt_loop:
     cp MON_COM_BOOT
     jp Z, command_boot
     
+    cp MON_COM_VERSION
+    jp Z, monitor_welcome ; this command just prints out the welcome msg again
+    
     ; no command character recognized. print error message
     ld HL, str_unknownCommand
     call printString
     
     jp monitorPromt_loop
     
+; parses a single hex character at (HL), stores result in A. 
+; A = $FF means error
+parseHex:
+    ld A, (HL)
+    cp $30
+    jp S, parseHex_noDigit ; char is < '0'
+    cp $3A
+    jp NS, parseHex_noDigit ; char is > '9' 
+    ; we now know the char is a digit
+    sub $30 ; subtract the value of '0'
+    ; hex value is now stored in A
+    ret
     
+parseHex_noDigit:
+    cp $41 ; the ASCII-char 'A'
+    jp S, parseHex_error ; char is < 'A'
+    cp $47 ; the ASCII-char 'G'
+    jp NS, parseHex_error ; char is > 'F'
+    ; we now know the char is a hex letter
+    sub $50 ; subtract the value of 'A' and add the 15 offset (as A means 15)
+    ;hex value is now stored in A
+    ret
+    
+parseHex_error:
+    ld A, $FF
+    ret
+    
+    
+; parses four hex chars pointed by HL and stores result in DE. sets A to 0 if
+; parsing succeeds. sets A to $FF if not or C is smaller than 1 upon calling.
+parseHexWord:
+    ld A, C
+    cp 1
+    jp S, parseHexWord_error ; not enough bytes for parsing a word
+    
+parseHexWord_loop:
+    call parseHex
+    cp $FF
+    ret Z ; not a valid hex char -> return
+    
+    ; we have parsed a valid hex char
+    ; TODO: insert the parsed char into the DE register and shift stuff
+    
+    inc HL
+    dec C
+    ret Z ; no bytes remaining -> return
+    
+    jp parseHexWord_loop
+    
+parseHexWord_error:
+    ld A, $FF
+    ret
+    
+;--------------------Monitor command definition area----------------------
+; NOTE: These are not CALL-ed! 
+; In the end of each command, simply jump back to monitorPromt_loop
+
+
 ; monitor command to jump to given location
 command_run:
-    call parseHex ; the hexadecimal ASCII-coded number at (HL) is stored in the
-                  ; DE register pair
-                  
+    ; store the hexadecimal ASCII-coded number at (HL) in the DE register pair
+    call parseHexWord 
+    
     ld HL, DE
     jp (HL) ; we are leaving the monitor here. no need to jump back to loop
     
 ; monitor command that loads the first record on tape into memory
 command_load:
+    ; first, we need to set up the PIT C0 to count the time between two zero
+    ; crossings in the tape signal
+    ld A, $
+    
+
     ld HL, str_pressPlayOnTape
     call printString
 command_load_waitForTape:
-    in A,(IO_CCR)
+    in A,(IO_TCR)
     and $01
     jp NZ,command_load_waitForTape ; wait until user pushes play button
     
@@ -208,15 +279,11 @@ command_load_waitForTape:
     ld HL, str_loading
     call printString
     
-    ld A, $80 ; set MOTOR bit in CCR
-    out A,(IO_CCR)
+    ld A, $80 ; set MOTOR bit in TCR
+    out A,(IO_TCR)
     
-    ; motor is now running, now we wait for first sync pulse
-    in A,(IO_CCR)
-    and $08
-    jp Z, command_load_sync
-    
-    
+    ; motor is now running, now we can start to read bits from the tape
+
 
     ;......
     
@@ -227,8 +294,8 @@ command_load_waitForTape:
 command_boot:
 
 
-    
-    
+
+org ROM_END
     
     
     
