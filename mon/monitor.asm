@@ -48,8 +48,9 @@ str_unknownCommand:
 str_loading:
     db 'LOADING. PLEASE WAIT...', $0A, $0D, $00
     
-; prints the character stored in A. destructive to contents of B
+; prints the character stored in A
 printChar:
+    push B
     ld B,A
     in A, (IO_UART_COM) ; read in status byte of UART
     and $01 ; mask out all bits except the TXRDY bit
@@ -58,6 +59,7 @@ printChar:
     ; UART is ready to send another byte now
     out (IO_UART_DAT), B ; UART will start sending the byte now
     
+    pop B
     ret
     
 ; prints all characters from HL to the next zero byte
@@ -124,15 +126,15 @@ readString_end:
 
     
 monitorStart:
-    ; inititalize CCR and perform an IO-RESET before intitalizing peripherals
+    ; inititalize TCCR and perform an IO-RESET before intitalizing peripherals
     ld A, (1 << BIT_IO_RESET); set only IO-RESET bit to one
-    out (IO_CCR),A
+    out (IO_TCCR),A
     nop ; keep the IO-RESET line high for at least 6 clock pulses
     nop
     nop
     ld A, 0 ; clear IO-RESET bit
-    out (IO_CCR),A
-    ; CCR is now intitalized and IO-Devices are reset
+    out (IO_TCCR),A
+    ; TCCR is now intitalized and IO-Devices are reset
     
     ; PIT 2 is connected to UART, so set it up for baud rate generation
     ld A, $84 ;10000100  set counter 2 in mode 2, binary counting
@@ -143,9 +145,10 @@ monitorStart:
     out (IO_PIT_C2), A
     out (IO_PIT_C2), B
     ; registers for counter are set. now we can gate the counter
-    in A,(IO_CCR)
+    in A,(IO_TCCR)
+    and IO_TCCR_WRITE_MASK ; mask out all the bits that are not readable
     or (1 << BIT_C2_GATE)
-    out (IO_CCR), A ; C2 is now counting
+    out (IO_TCCR), A ; C2 is now counting
     
     ; write mode byte to UART (first command byte after reset)
     ld A, $4D; 01001110  8 data bits, 1 stop bit, no parity, 1 times prescaler
@@ -153,10 +156,6 @@ monitorStart:
     ; enable receiver and transmitter
     ld A, (1 << BIT_TXEN) | (1 << BIT_RXEN)
     out (IO_UART_COM), A
-    
-    ; reset TCC
-    xor A,A ; set A to zero
-    out (IO_TCC),A
     
     ; IO-Devices are now initialized
     
@@ -271,20 +270,38 @@ command_load:
     ld HL, str_pressPlayOnTape
     call printString
 command_load_waitForTape:
-    in A,(IO_TCR)
-    and $01
+    in A,(IO_TCCR)
+    and (1 << BIT_TAPE_SENSE) ; mask out SENSE bit
     jp NZ,command_load_waitForTape ; wait until user pushes play button
     
     ; user pushed play button. print loading message
     ld HL, str_loading
     call printString
     
-    ld A, $80 ; set MOTOR bit in TCR
-    out A,(IO_TCR)
+    in A,(IO_TCCR) ; set MOTOR bit in TCR
+    and IO_TCCR_WRITE_MASK ; mask out all the bits that are not readable
+    or (1 << BIT_TAPE_MOTOR)
+    out A,(IO_TCCR)
     
     ; motor is now running, now we can start to read bits from the tape
 
+load_tapeLoop:
+    ; first, read the current tape state
+    in A,(IO_TCCR)
+    and (1 << BIT_TAPE_DATA_READ) ; mask out tape data bit...
+    
+    ; second, compare it with the previous state
+    sub B
+    jp NS, load_tapeLoop ; TODO: this is unsafe. me might miss a transition. we
+    ; need an interrupt based version of some sort
+    
+    ; now we store the current state
+    ld C,A
+    
+    
+    xor B 
 
+    
     ;......
     
     jp monitorPromt_loop ; jump back to monitor loop
