@@ -22,11 +22,12 @@ UART_DIV_VAL equ (CPU_SPEED/UART_PRESCALE)/UART_BAUDRATE - 1
 
 TERM_LF equ $0A
 
-MON_PROMPT equ $3E ; the '>' char
+MON_PROMPT equ $3E ; '>'
 
-MON_COM_RUN equ $72 ; the 'r' character
-MON_COM_LOAD equ $6C ; the 'l' character
-MON_COM_VERSION equ $76 ; the 'v' character
+MON_COM_RUN equ $72 ; 'r'
+MON_COM_LOAD equ $6C ; 'l'
+MON_COM_VERSION equ $76 ; 'v'
+MON_COM_EXAMINE equ $65 ; 'e'
 
 org $0000
 
@@ -191,23 +192,25 @@ endif
 readString:
     ld C, $00
     push HL ; save HL on stack
-readString_loop:
+_readString_loop:
     call readChar
     ld (HL), A
     
     inc HL
     
     inc C
-    jp Z, readString_end ; return if C has flown over (256 chars read)
+    jp Z, _readString_end ; return if C has flown over (256 chars read)
     
     cp TERM_LF
-    jp NZ, readString_loop ; loop, if read character was not TERM_LF
+    jp NZ, _readString_loop ; loop, if read character was not TERM_LF
 
-readString_end:
+_readString_end:
     pop HL ; restore HL
     ret ; character was TERM_LF, so return
+
+
     
-    
+   
 monitorStart:
     ; inititalize TCCR and perform an IO-RESET before intitalizing peripherals
     ld A, (1 << BIT_IO_RESET); set only IO-RESET bit to one
@@ -249,7 +252,7 @@ monitor_welcome:
     ld HL, str_welcome ; print welcome message
     call printString
     
-monitorPromt_loop:
+monitorPrompt_loop:
     ld A, MON_PROMPT ; print input promt
     call printChar
     
@@ -271,6 +274,9 @@ monitorPromt_loop:
     cp MON_COM_BOOT
     jp Z, command_boot
     
+    cp MON_COM_EXAMINE
+    jp Z, command_examine
+    
     cp MON_COM_VERSION
     jp Z, monitor_welcome ; this command just prints out the welcome msg again
     
@@ -278,7 +284,7 @@ monitorPromt_loop:
     ld HL, str_unknownCommand
     call printString
     
-    jp monitorPromt_loop
+    jp monitorPrompt_loop
     
     
 ; parses a single hex character at (HL), stores result in A. 
@@ -286,52 +292,73 @@ monitorPromt_loop:
 parseHex:
     ld A, (HL)
     cp $30
-    jp S, parseHex_noDigit ; char is < '0'
+    jp S, _parseHex_noDigit ; char is < '0'
     cp $3A
-    jp NS, parseHex_noDigit ; char is > '9' 
+    jp NS, _parseHex_noDigit ; char is > '9' 
     ; we now know the char is a digit
     sub $30 ; subtract the value of '0'
     ; hex value is now stored in A
     ret
     
-parseHex_noDigit:
+_parseHex_noDigit:
     cp $41 ; the ASCII-char 'A'
-    jp S, parseHex_error ; char is < 'A'
+    jp S, _parseHex_error ; char is < 'A'
     cp $47 ; the ASCII-char 'G'
-    jp NS, parseHex_error ; char is > 'F'
+    jp NS, _parseHex_error ; char is > 'F'
     ; we now know the char is a hex letter
     sub $50 ; subtract the value of 'A' and add the 15 offset (as A means 15)
     ;hex value is now stored in A
     ret
     
-parseHex_error:
+_parseHex_error:
     ld A, $FF
     ret
     
     
-; parses four hex chars pointed by HL and stores result in DE. sets A to 0 if
-; parsing succeeds. sets A to $FF if not or C is smaller than 1 upon calling.
+; parses a hex word that is pointed by HL, the amount of bytes available at HL
+; indicated by C. parsing is finished if a non-hex character is found, if C 
+; goes zero during parsing or after 4 chars have been read. A is set to $FF to 
+; indicate an error (eg. if this routine is called with C = 0). The parsed word
+; is stored in the DE register pair. After the operation, HL points to the byte
+; AFTER the last one parsed and C is decremented by the amount of bytes parsed.
 parseHexWord:
     ld A, C
-    cp 1
-    jp S, parseHexWord_error ; not enough bytes for parsing a word
+    cp 0
+    jp Z, _parseHexWord_error ; not enough bytes for parsing a word
     
-parseHexWord_loop:
+_parseHexWord_loop:
     call parseHex
     cp $FF
-    ret Z ; not a valid hex char -> return
+    jp Z, _parseHexWord_done ; not a valid hex char -> return
     
     ; we have parsed a valid hex char
-    ; TODO: insert the parsed char into the DE register and shift stuff
+    
+    ; perform a shift-left-by-4 operation on DE register
+    ex DE,HL
+    add HL, HL
+    add HL, HL
+    add HL, HL
+    add HL, HL
+    ex DE,HL
+    
+    ; insert loaded char into DE
+    ld B,A
+    ld A,E
+    add B
+    ld E,A
     
     inc HL
     dec C
-    ret Z ; no bytes remaining -> return
+    jp Z, _parseHexWord_done ; no bytes remaining -> return
     
-    jp parseHexWord_loop
+    jp _parseHexWord_loop
     
-parseHexWord_error:
+_parseHexWord_error:
     ld A, $FF
+    ret
+    
+_parseHexWord_done:
+    ld A, 0
     ret
     
 ;--------------------Monitor command definition area----------------------
@@ -346,6 +373,8 @@ command_run:
     
     ld HL, DE
     jp (HL) ; we are leaving the monitor here. no need to jump back to loop
+
+    
     
 ; monitor command that loads the first record on tape into memory
 command_load:
@@ -356,10 +385,10 @@ command_load:
 
     ld HL, str_pressPlayOnTape
     call printString
-command_load_waitForTape:
+_command_load_waitForTape:
     in A,(IO_TCCR)
     and (1 << BIT_TAPE_SENSE) ; mask out SENSE bit
-    jp NZ,command_load_waitForTape ; wait until user pushes play button
+    jp NZ,_command_load_waitForTape ; wait until user pushes play button
     
     ; user pushed play button. print loading message
     ld HL, str_loading
@@ -372,14 +401,15 @@ command_load_waitForTape:
     
     ; motor is now running, now we can start to read bits from the tape
 
-load_tapeLoop:
+_command_load_tapeLoop:
     ; first, read the current tape state
     in A,(IO_TCCR)
     and (1 << BIT_TAPE_DATA_READ) ; mask out tape data bit...
     
     ; second, compare it with the previous state
     sub B
-    jp NS, load_tapeLoop ; TODO: this is unsafe. me might miss a transition. we
+    jp NS, _command_load_tapeLoop 
+    ; TODO: this is unsafe. me might miss a transition. we
     ; need an interrupt based version of some sort
     
     ; now we store the current state
@@ -391,11 +421,21 @@ load_tapeLoop:
     
     ;......
     
-    jp monitorPromt_loop ; jump back to monitor loop
+    jp monitorPrompt_loop ; jump back to monitor loop
 
 ; monitor command that loads the first record on tape to the first available 
 ; memory location and gives control to the loaded program. requires no args.
 command_boot:
+    jp monitorPrompt_loop
+
+; prints contents of memory loaction given by parameter
+; (may be an adress range)
+command_examine:
+    call parseHexWord
+    push DE
+    
+
+    jp monitorPrompt_loop
 
 
 
