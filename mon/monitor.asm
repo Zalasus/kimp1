@@ -29,6 +29,8 @@ MON_COM_LOAD equ $6C ; 'l'
 MON_COM_VERSION equ $76 ; 'v'
 MON_COM_EXAMINE equ $65 ; 'e'
 
+MON_RANGE equ $2D ; '-'
+
 org $0000
 
 ld HL, FFFFh ; init stackpointer to end of memory
@@ -127,6 +129,9 @@ str_loading:
     
 str_memError:
     db 'MEMORY ERROR', $0A, $0D, $00
+    
+str_syntaxError:
+    db 'SYNTAX ERROR', $0A, $0D, $00
     
 ; prints the character stored in A
 printChar:
@@ -317,19 +322,19 @@ _parseHex_error:
     
 ; parses a hex word that is pointed by HL, the amount of bytes available at HL
 ; indicated by C. parsing is finished if a non-hex character is found, if C 
-; goes zero during parsing or after 4 chars have been read. A is set to $FF to 
-; indicate an error (eg. if this routine is called with C = 0). The parsed word
-; is stored in the DE register pair. After the operation, HL points to the byte
+; goes zero during parsing or after 4 chars have been read. The parsed word is
+; stored in the DE register pair. After the operation, HL points to the byte
 ; AFTER the last one parsed and C is decremented by the amount of bytes parsed.
 parseHexWord:
+    ld DE, 0
     ld A, C
     cp 0
-    jp Z, _parseHexWord_error ; not enough bytes for parsing a word
+    ret Z ; no bytes for parsing -> return
     
 _parseHexWord_loop:
     call parseHex
     cp $FF
-    jp Z, _parseHexWord_done ; not a valid hex char -> return
+    ret Z ; not a valid hex char -> return
     
     ; we have parsed a valid hex char
     
@@ -349,17 +354,18 @@ _parseHexWord_loop:
     
     inc HL
     dec C
-    jp Z, _parseHexWord_done ; no bytes remaining -> return
+    ret Z ; no bytes remaining -> return
     
     jp _parseHexWord_loop
     
-_parseHexWord_error:
-    ld A, $FF
-    ret
+
+; DO NOT CALL!!! prints out a syntax error message
+monitor_syntaxError:
+    ld HL, str_syntaxError
+    call printString
     
-_parseHexWord_done:
-    ld A, 0
-    ret
+    jp monitorPrompt_loop
+    
     
 ;--------------------Monitor command definition area----------------------
 ; NOTE: These are not CALL-ed! 
@@ -433,8 +439,29 @@ command_boot:
 command_examine:
     call parseHexWord
     push DE
+    inc DE ; with no arguments, we only print one byte
     
+    ld A,C
+    cp 0
+    jp Z, _command_examine_print ; no more arguments -> start printing
 
+    ld A,(HL) ; load remaining char
+    cp MON_RANGE
+    jp NZ, monitor_syntaxError ; remaining char is not range indicator -> error
+    
+    inc HL ; move pointer to next byte
+    dec C
+    
+    ld A,C ; check if at least one byte is remaining
+    cp 0
+    jp Z, monitor_syntaxError ; nothing after range indicator -> syntax error
+    
+    ; TODO: continue here
+    
+_command_examine_print:
+    
+    
+    
     jp monitorPrompt_loop
 
 
