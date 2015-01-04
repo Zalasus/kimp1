@@ -49,8 +49,18 @@ IO_TCCR_WRITE_MASK equ $3D
 
 
 ;-------------WD37C65 FLOPPY CONTROLLER-------------
-IO_FDC_STATUS equ $18
+IO_FDC_STAT equ $18
 IO_FDC_DATA equ $19
+IO_FDC_OPER equ $1A
+IO_FDC_CONT equ $1B
+
+; operation register bits
+BIT_DRIVE_SELECT equ 0
+BIT_SOFT_RESET equ 2
+BIT_DMA_ENABLE equ 3
+BIT_MOTOR_ON_ENABLE_1 equ 4
+BIT_MOTOR_ON_ENABLE_2 equ 5
+BIT_MODE_SELECT equ 7
 
 ; status register 0 bits
 BIT_FDD0_BUSY equ 0

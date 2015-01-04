@@ -306,6 +306,23 @@ _printHex_3:
 	ret
    
    
+; inititalizes the FDC to AT/EISA mode, setting data rate etc.
+fdc_init:
+    ; we assume the FDC is still in reset-mode
+    ld A, [1 << BIT_SOFT_RESET] ; we don't want soft reset (active low)
+    out (IO_FDD_OPER),A ; writing to operations reg initializes AT/EISA-Mode
+    
+    ret
+    
+; moves the drive specified by B to home sector
+fdc_home:
+    ld A, $08 ; recalibrate command
+    out (IO_FDD_DATA), A
+    ld A, B
+    and $03
+    out (IO_FDD_DATA), A
+    
+   
    
    
 monitorStart:
@@ -320,7 +337,7 @@ monitorStart:
     ; TCCR is now intitalized and IO-Devices are reset
     
     ; PIT 2 is connected to UART, so set it up for baud rate generation
-    ld A, $84 ;10000100  set counter 2 in mode 2, binary counting
+    ld A, $84 ; 10000100  set counter 2 in mode 2, binary counting
     out (IO_PIT_CTRL), A
     ; write divider value to counter
     ld A, high UART_DIV_VAL
@@ -334,7 +351,7 @@ monitorStart:
     out (IO_TCCR), A ; C2 is now counting
     
     ; write mode byte to UART (first command byte after reset)
-    ld A, $4D; 01001110  8 data bits, 1 stop bit, no parity, 1 times prescaler
+    ld A, $4D ; 01001110   8 data bits, 1 stop bit, no parity, 1 x prescaler
     out (IO_UART_COM),A 
     ; enable receiver and transmitter
     ld A, [1 << BIT_TXEN] | [1 << BIT_RXEN]
@@ -471,9 +488,11 @@ _command_load_tapeLoop:
     jp monitorPrompt_loop ; jump back to monitor loop
 
     
-; monitor command that loads the first record on tape to the first available 
-; memory location and gives control to the loaded program. requires no args.
+; loads the first sector from fdd 0 into memory and jumps to the loaded code
 command_boot:
+
+    
+
     jp monitorPrompt_loop
 
     
@@ -623,9 +642,6 @@ _command_store_noLf:
     org ROM_END
     
     end main
-    
-    
-    
 
     
     
