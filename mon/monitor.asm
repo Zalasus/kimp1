@@ -53,6 +53,13 @@ str_welcome:
 str_logon:
     db 'LOGON: ', $00
     
+str_answer:
+    db 'ANSWER  >', $21, low(str_badLogon-23), high(str_badLogon-23)
+    db $CD, low(printString), high(printString)
+    db $C3, low(monitorPrompt_loop), high(monitorPrompt_loop)
+    db $57,$68,$61,$74,$20,$77,$61,$73,$20,$74,$68,$65,$20,$71,$75,$65,$73,$74
+    db $69,$6F,$6E,$3F,$00
+    
 str_badLogon:
     db 'INDENTIFICATION NOT RECOGNIZED BY SYSTEM', $0A, $0D, $00
     
@@ -304,24 +311,37 @@ _printHex_2:
 _printHex_3:
 	call printChar
 	ret
+
+; prints the word stored in HL, followed by a colon and space character
+printAdressToken:
+    ld A, H
+    call printHex
+    ld A, L
+    call printHex
+    ld A, MON_ADRESS_SEPARATOR ; print colon
+    call printChar
+    ld A, TERM_SPACE ; print space
+    call printChar
+    ret
    
    
 ; inititalizes the FDC to AT/EISA mode, setting data rate etc.
 fdc_init:
     ; we assume the FDC is still in reset-mode
     ld A, [1 << BIT_SOFT_RESET] ; we don't want soft reset (active low)
-    out (IO_FDD_OPER),A ; writing to operations reg initializes AT/EISA-Mode
+    out (IO_FDC_OPER),A ; writing to operations reg initializes AT/EISA-Mode
     
     ret
     
 ; moves the drive specified by B to home sector
 fdc_home:
     ld A, $08 ; recalibrate command
-    out (IO_FDD_DATA), A
+    out (IO_FDC_DATA), A
     ld A, B
     and $03
-    out (IO_FDD_DATA), A
+    out (IO_FDC_DATA), A
     
+    ret
    
    
    
@@ -501,7 +521,6 @@ command_boot:
 command_examine:
     call parseHexWord
     push DE
-    inc DE ; by default we only print one byte
     
     ld A,C
     cp 0
@@ -520,18 +539,15 @@ command_examine:
     call parseHexWord
     
 _command_examine_print:
+    inc DE ; since we want the upper address to be inclusive
+    
     pop HL
-    ; start adress is now stored in HL, end adress in DE
+    ; start address is now stored in HL, end adress in DE
     
     ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
 
     ; print starting adress token
-    ld A, H
-    call printHex
-    ld A, L
-    call printHex
-    ld A, MON_ADRESS_SEPARATOR ; print colon
-    call printChar
+    call printAdressToken
     
 _command_examine_print_loop:
 
@@ -550,13 +566,7 @@ _command_examine_print_loop:
     call printNewLine
     ld C,16
     
-    ; print adress token
-    ld A, H
-    call printHex
-    ld A, L
-    call printHex
-    ld A, MON_ADRESS_SEPARATOR ; print colon
-    call printChar
+    call printAdressToken
     
 _command_examine_print_noLf:
 
@@ -584,12 +594,7 @@ command_store:
     ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
 
     ; print starting adress token
-    ld A, H
-    call printHex
-    ld A, L
-    call printHex
-    ld A, MON_ADRESS_SEPARATOR ; print colon
-    call printChar
+    call printAdressToken
     
 _command_store_loop:
     call readChar
@@ -627,12 +632,7 @@ _command_store_loop:
     ld C,16
     
     ; print adress token
-    ld A, H
-    call printHex
-    ld A, L
-    call printHex
-    ld A, MON_ADRESS_SEPARATOR ; print colon
-    call printChar
+    call printAdressToken
     
 _command_store_noLf:
     jp _command_store_loop
