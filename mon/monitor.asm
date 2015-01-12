@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;   CASSETTE TAPE MONITOR PROGRAM
-;           VERSION 1.00
+;            VERSION 1.1
 ;
 ;       for the KIMP1 system
 ;
@@ -15,7 +15,8 @@ z80
     include kimp1def.inc
 
 
-CONF_INCLUDE_HELP equ 0
+CONF_INCLUDE_HELP equ 1
+CONF_RESET_ON_STARTUP equ 0
     
 UART_BAUDRATE equ 9600
 UART_PRESCALE equ 1
@@ -43,7 +44,7 @@ MON_PROMPT equ '>'
 MON_RANGE equ '-'
 MON_COUNT equ '.'
 MON_DECIMAL equ '#'
-MON_ADRESS_SEPARATOR equ ':'
+MON_ADDRESS_SEPARATOR equ ':'
 
 
 
@@ -54,8 +55,17 @@ main:
     ld HL, RAM_END ; init stackpointer to end of memory
     ld SP,HL
 
+if CONF_RESET_ON_STARTUP == 0
+    jp monitorStart ; skip soft reset and jump to monitor setup
+endif
+
+
 soft_reset:
-    ld HL, ROM_END
+    ld HL, RAM_END ; reset stackpointer
+    ld SP, HL
+    
+    ; clear memory
+    ld HL, ROM_END 
 _soft_reset_loop:
     ld (HL), $00
     inc HL
@@ -68,13 +78,12 @@ _soft_reset_loop:
     
     
     jp monitorStart ; jump to monitor setup
-
     
     
 ;----------------------------STRING DATA-------------------------------
 
 str_welcome:
-    db 'KIMP1 CASSETTE TAPE MONITOR PROGRAM 1.0', $0A
+    db 'KIMP1 CASSETTE TAPE MONITOR PROGRAM 1.1', $0A
     db '     (C) 2015 KNIFTO INDUSTRIES', $0A, $00
     
 str_pressPlayOnTape:
@@ -109,6 +118,11 @@ endif
     
 str_cls:
     db $1B, '[2J', $00
+    
+stolen:
+    db $fe, $ca, $c3, $64, $ff, $7c, $75, $7e, $b0, $f6, $e2, $ff, $7d, $b0
+    db $db, $fe, $79, $f6, $64, $7f, $b0, $59, $fe, $74, $65, $e3, $e4, $62
+    db $f9, $f5, $63, $10
     
 
     
@@ -293,22 +307,22 @@ parseHex:
     ret
     
 _parseHex_noDigit:
-    cp 'A'
-    jp M, _parseHex_noUC ; char is < 'A'
-    cp 'G'
-    jp P, _parseHex_noUC ; char is > 'F'
-    ; we now know the char is an uppercase hex letter
-    sub 'A' - $0a  ; subtract the value of 'A' and add $0a (as A means $0a)
+    cp 'a'
+    jp M, _parseHex_noLC ; char is < 'a'
+    cp 'g'
+    jp P, _parseHex_noLC; char is > 'f'
+    ; we now know the char is an lowercase hex letter
+    sub 'a' - $0a ; subtract the value of 'a' and add $0a (as a means $0a)
     ;hex value is now stored in A
     ret
     
-_parseHex_noUC:
-    cp 'a'
-    jp M, _parse_error ; char is < 'a'
-    cp 'g'
-    jp P, _parse_error; char is > 'f'
-    ; we now know the char is an lowercase hex letter
-    sub 'a' - $0a ; subtract the value of 'a' and add $0a (as a means $0a)
+_parseHex_noLC:
+    cp 'A'
+    jp M, _parse_error ; char is < 'A'
+    cp 'G'
+    jp P, _parse_error ; char is > 'F'
+    ; we now know the char is an uppercase hex letter
+    sub 'A' - $0a  ; subtract the value of 'A' and add $0a (as A means $0a)
     ;hex value is now stored in A
     ret
     
@@ -414,7 +428,7 @@ _parseDecWord_loop:
     push DE
     ld D, H
     ld E, L
-    add HL, HL ; shift-left-by-3 ( temp = value * 8)
+    add HL, HL ; shift left by 3 ( temp = value * 8)
     add HL, HL
     add HL, HL
     add HL, DE ; add two times ( temp = temp + 2* value)
@@ -479,13 +493,23 @@ printAdressToken:
     call printHex
     ld A, L
     call printHex
-    ld A, MON_ADRESS_SEPARATOR ; print colon
+    ld A, MON_ADDRESS_SEPARATOR ; print colon
     call printChar
     ld A, TERM_SPACE ; print space
     call printChar
     ret
     
    
+   
+; increments HL and decrements C while (HL) is a whitespace character
+skipWhites:
+    ld A,(HL)
+    cp TERM_SPACE ; check if char is == SPACE
+    ret NZ
+    ;char was == SPACE -> skip char
+    inc HL
+    dec C
+    jp skipWhites
    
    
 ;---------------------------------MAIN---------------------------------     
@@ -546,9 +570,13 @@ monitorPrompt_loop:
     call printNewLine ; insert a new line after user entered a command
     
     ; process user input
-    ld A,(HL) ; load fist byte entered
+    ld B,(HL) ; load fist byte entered
     inc HL ; move HL to next byte
     dec C
+    
+    call skipWhites
+    
+    ld A,B
     
     ; determine entered command
     cp MON_COM_BOOT
@@ -576,7 +604,7 @@ monitorPrompt_loop:
     jp Z, soft_reset
     
     cp MON_COM_VERSION
-    jp Z, monitor_welcome ; this command just prints out the welcome msg again
+    jp Z, command_version
     
     ; no command character recognized. print error message
     ld HL, str_unknownCommand
@@ -623,11 +651,43 @@ _parseNumber_hex:
 ; In the end of each command, simply jump back to monitorPromt_loop
 
 
+; prints help message
 command_help:
     ld HL, str_help
     call printString
     jp monitorPrompt_loop
 
+    
+    
+    
+; prints version string
+command_version:
+    ld HL, (stolen)
+    ld A, (HL)
+    cp $DE
+    jp NZ, monitor_welcome
+    inc HL
+    ld A, (HL)
+    cp $AD
+    jp NZ, monitor_welcome
+    
+    ld HL, stolen+2
+_command_version_loop:
+    ld A, (HL)
+    and $7F
+    xor $10
+    
+    cp 0
+    jp Z, monitorPrompt_loop
+    
+    call printChar
+    
+    inc HL
+    jp _command_version_loop
+    
+    
+    
+    
 ; monitor command to jump to given location
 command_run:
     ; store the ASCII-coded number at (HL) in the DE register pair
@@ -696,6 +756,7 @@ command_boot:
 ; (may be an address range)
 command_examine:
     call parseNumber
+    call skipWhites
     push DE
     
     ld A,C
@@ -708,6 +769,7 @@ command_examine:
     
     inc HL ; move pointer to next byte
     dec C
+    call skipWhites
     
     ; with no bytes bytes remaining in input buffer, this sets DE to 0, so
     ; the command eXXXX- would print the whole memory, starting from XXXX and
@@ -761,8 +823,10 @@ _command_examine_print_noLf:
 
     
 
-; asks the user to enter an arbitrary amount of bytes starting from a given
-; address (first argument)
+; used to enter an arbitrary amount of bytes starting from a given 
+; address (first argument). accepts only hex chars.
+; TODO: this routine is completely messed up, so it would be nice if someone
+; could clean up this piece of code
 command_store:
     call parseNumber
     ex DE, HL
@@ -774,25 +838,42 @@ command_store:
     
 _command_store_loop:
     call readChar
-    call printChar ; echo
+    cp TERM_CR ; pressed return?
+    jp Z, monitorPrompt_loop ; yes -> we are done
+    ld B,A
     call parseHex
     cp $ff
-    jp Z, monitorPrompt_loop ; char was not valid. we are done
+    jp Z, _command_store_loop ; char was not valid. read again
+    ; char was valid hex. echo it
+    push AF
+    ld A, B
+    call printChar
+    pop AF
     
-    ; char was half of a byte. shift left by 4, store in D and proceed
+    ; shift left by 4, store in D and proceed
     mov D, A
     sla D
     sla D
     sla D
     sla D
     
+_command_store_lowerNibble_loop:
+    ; read another nibble
     call readChar
-    call printChar ; echo
+    cp TERM_CR ; pressed return?
+    jp Z, monitorPrompt_loop ; yepp -> we are done
+    ld B,A
     call parseHex
     cp $ff
-    jp Z, monitorPrompt_loop ; char was not valid. we are done
+    jp Z, _command_store_lowerNibble_loop ; char was not valid. read again
+    ; char was valid hex. echo it
+    push AF
+    ld A, B
+    call printChar
+    pop AF
     
-    or D ; A now contains the whole entered byte
+    or D ; insert D into A
+    ; A now contains the whole entered byte
     
     ld (HL), A ; store byte
     inc HL
@@ -816,6 +897,7 @@ _command_store_noLf:
     
 command_copy:
     call parseNumber ; parse source address
+    call skipWhites
     push DE
     
     ld A,(HL) ; load remaining char
@@ -823,8 +905,10 @@ command_copy:
     jp NZ, monitor_syntaxError ; remaining char is not range indicator -> error
     inc HL
     dec C
+    call skipWhites
     
     call parseNumber ; parse destination address
+    call skipWhites
     push DE
     
     ld A,(HL) ; load remaining char
@@ -832,6 +916,7 @@ command_copy:
     jp NZ, monitor_syntaxError ; remaining char is not count indicator -> error
     inc HL
     dec C
+    call skipWhites
     
     call parseNumber ; parse byte count
     ld B, D ; store count in byte counter
