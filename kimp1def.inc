@@ -3,7 +3,7 @@
 ;           Defition file
 ;       for the KIMP1 system
 ;
-;    (C) 1979 Knifto Industries
+;    (C) 2015 Knifto Industries
 ;-----------------------------------
 
 

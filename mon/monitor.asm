@@ -12,7 +12,7 @@
 z80
 
     ; include definition file for KIMP1 computer
-    include kimp1def.inc
+    include ../kimp1def.inc
 
 
 CONF_INCLUDE_HELP equ 1
@@ -49,6 +49,25 @@ MON_ADDRESS_SEPARATOR equ ':'
 
 
     org $0000
+    
+; monitor jump vector
+
+    jp main
+    jp monitorToRam
+    jp printChar
+    jp readChar
+    jp printString
+    jp readString
+    jp clearScreen
+    jp 0
+    jp 0
+    jp 0
+    jp 0
+    jp 0
+    jp 0
+    jp 0
+    jp 0
+    jp 0
     
 main:
 
@@ -112,8 +131,8 @@ else
     db 'h                 Display this message', $0A
     db 'x                 Performs soft reset', $0A, $0A
     db 'Arguments in square brackets are optional', $0A
-    db 'All numbers are interpreted as hexadecimal.', $0A
-    db 'Numbers prefixed with # are interpreted as decimal.', $0A, $00
+    db 'Arguments are interpreted as hexadecimal.', $0A
+    db 'Arguments prefixed with # are interpreted as decimal.', $0A, $00
 endif
     
 str_cls:
@@ -928,6 +947,81 @@ command_copy:
 
     jp monitorPrompt_loop
     
+    
+    
+    
+command_print:
+    
+    jp monitorPrompt_loop
+    
+charsRemaining:
+    ld A,C
+    cp 0
+    ret Z
+    
+expression:
+    call term
+    jp charsRemaining
+    
+    push DE
+    ld A,(HL)
+    cp '+'
+    jp Z,_expression_add
+    cp '-'
+    jp NZ,monitor_syntaxError
+    call term
+    ; save HL here
+    pop HL
+    sub DE ; HL = HL - DE
+    
+    
+    
+term:
+    call factor
+    jp charsRemaining
+    
+    
+    
+factor:
+    call parseNumber
+    ret
+    
+        
+shovelknight_size equ shovelknight_rom_end - shovelknight_rom
+shovelknight_ram equ ROM_END
+shovelknight_ram_end equ shovelknight_ram + shovelknight_size
+        
+monitorToRam:
+    ; load shovelknight into memory
+    ld HL, shovelknight_rom
+    ld DE, shovelknight_ram
+    ld BC, shovelknight_size
+    ldir
+    
+    ; give control to shovelknight
+    jp shovelknight_ram
+    
+    
+shovelknight_rom:
+
+    ld HL, $0000 ; copy monitor into HIMEM
+    ld DE, shovelknight_ram_end
+    ld BC, ROM_END
+    ldir
+    
+    in A,(IO_TCCR) ; disable rom mapping
+    and IO_TCCR_WRITE_MASK
+    or [1 << BIT_ROM_GATE]
+    out (IO_TCCR),A 
+    
+    ld HL, shovelknight_ram_end ; copy monitor back into LOMEM
+    ld DE, $0000
+    ld BC, ROM_END
+    ldir
+    
+    jp monitorPrompt_loop ; shovelknight is done
+
+shovelknight_rom_end:
     
     org ROM_END
     
