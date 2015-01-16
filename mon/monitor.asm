@@ -39,6 +39,7 @@ MON_COM_STORE equ 's'
 MON_COM_HELP equ 'h'
 MON_COM_COPY equ 'c'
 MON_COM_SOFTRESET equ 'x'
+MON_COM_PRINT equ 'p'
 
 MON_PROMPT equ '>'
 MON_RANGE equ '-'
@@ -46,6 +47,11 @@ MON_COUNT equ '.'
 MON_DECIMAL equ '#'
 MON_ADDRESS_SEPARATOR equ ':'
 
+MON_INPUT_BUFFER equ ROM_END ; command line input buffer in HIMEM
+MON_INPUT_BUFFER_SIZE equ $100 ; 256 bytes
+
+
+WORDSTOR equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage
 
 
     org $0000
@@ -579,7 +585,7 @@ monitorPrompt_loop:
     ld A, MON_PROMPT ; print input prompt
     call printChar
     
-    ld HL, ROM_END ; this is where we want to store the read bytes
+    ld HL, MON_INPUT_BUFFER ; this is where we want to store the read bytes
     call readString ; read user input
     
     ld A,C ; user entered nothing. prompt again
@@ -624,6 +630,9 @@ monitorPrompt_loop:
     
     cp MON_COM_VERSION
     jp Z, command_version
+    
+    cp MON_COM_PRINT
+    jp Z, command_print
     
     ; no command character recognized. print error message
     ld HL, str_unknownCommand
@@ -949,42 +958,153 @@ command_copy:
     
     
     
-    
+
 command_print:
+    call skipWhites
+
+_command_print_loop:
+    call expression
+    ld A,D
+    call printHex
+    ld A,E
+    call printHex
+    call printNewLine
+    
+    call skipWhites
+    ld A,C ; chars remaining?
+    or A
+    jp NZ,_command_print_loop
     
     jp monitorPrompt_loop
+
+
+; HL = HL - DE
+subtract:
+    ld A,E ; calculate two's complement of DE
+    cpl
+    ld E,A
+    ld A,D
+    cpl
+    ld D,A
+    inc DE
+    add HL,DE
+    ret
     
-charsRemaining:
-    ld A,C
-    cp 0
-    ret Z
+    
+; HL = HL * DE
+multiply:
+    ld HL, $DEAD
+    ret
+
+; HL = HL/DE
+divide:
+    ld HL, $DEAD
+    ret
+    
+    
+    
     
 expression:
     call term
-    jp charsRemaining
     
-    push DE
+_expression_loop:
+    ld A,C ; chars remaining?
+    or A
+    ret Z
     ld A,(HL)
     cp '+'
     jp Z,_expression_add
     cp '-'
-    jp NZ,monitor_syntaxError
+    ret NZ
+    
+    push DE
+    inc HL
+    dec C
     call term
-    ; save HL here
+    ld (WORDSTOR), HL ; save HL
     pop HL
-    sub DE ; HL = HL - DE
+    call subtract
+    ex DE,HL
+    ld HL,(WORDSTOR) ; restore HL
+    jp _expression_loop
+    
+_expression_add:
+    push DE
+    inc HL
+    dec C
+    call term
+    ld (WORDSTOR), HL
+    pop HL
+    add HL,DE
+    ex DE,HL
+    ld HL,(WORDSTOR)
+    jp _expression_loop
     
     
     
 term:
     call factor
-    jp charsRemaining
+    
+_term_loop:
+    ld A,C ; chars remaining?
+    or A
+    ret Z
+    ld A,(HL)
+    cp '*'
+    jp Z,_term_multiply
+    cp '/'
+    ret NZ
+    
+    push DE
+    inc HL
+    dec C
+    call factor
+    ld (WORDSTOR), HL
+    pop HL
+    call divide
+    ex DE,HL
+    ld HL,(WORDSTOR)
+    jp _term_loop
+    
+_term_multiply:
+    push DE
+    inc HL
+    dec C
+    call factor
+    ld (WORDSTOR), HL
+    pop HL
+    call multiply
+    ex DE,HL
+    ld HL,(WORDSTOR)
+    jp _term_loop
+    
     
     
     
 factor:
+    call skipWhites
+    ld A,(HL)
+    cp '('
+    jp Z, _factor_expression
+    
     call parseNumber
+    jp _factor_end
+    
+_factor_expression:
+    inc HL
+    dec C
+    call expression
+    ld A,(HL)
+    cp ')'
+    jp NZ,monitor_syntaxError
+    inc HL
+    dec C
+    
+_factor_end:
+    call skipWhites
     ret
+
+    
     
         
 shovelknight_size equ shovelknight_rom_end - shovelknight_rom
