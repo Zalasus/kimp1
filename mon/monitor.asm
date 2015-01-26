@@ -42,8 +42,7 @@ MON_COM_SOFTRESET equ 'x'
 MON_COM_PRINT equ 'p'
 
 MON_PROMPT equ '>'
-MON_RANGE equ '-'
-MON_COUNT equ '.'
+MON_ARGUMENT_SEPERATOR equ ','
 MON_DECIMAL equ '#'
 MON_ADDRESS_SEPARATOR equ ':'
 
@@ -52,7 +51,7 @@ MON_INPUT_BUFFER_SIZE equ $100 ; 256 bytes
 
 
 WORDSTOR equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage
-
+ANSWER equ WORDSTOR + 2 ; memory for last parsed expression
 
     org $0000
     
@@ -127,18 +126,19 @@ str_help:
 if CONF_INCLUDE_HELP == 0
     db 'NO HELP AVAILABLE', $0A, $00
 else
-    db 'eSSSS[-EEEE]      Examine address SSSS to EEEE', $0A
-    db 'sXXXX             Store to address XXXX', $0A
-    db 'rXXXX             Execute program at XXXX', $0A
-    db 'cSSSS-DDDD.CCCC   Copy CCCC bytes from SSSS to DDDD', $0A
-    db 'lXXXX             Load from tape to address XXXX', $0A
-    db 'b                 Boots from floppy', $0A
-    db 'v                 Display version string', $0A
-    db 'h                 Display this message', $0A
-    db 'x                 Performs soft reset', $0A, $0A
+    db 'eS[,E]     Examine address S to E', $0A
+    db 'sX         Store to address X', $0A
+    db 'rX         Execute program at X', $0A
+    db 'cS,D,C     Copy C bytes from S to D', $0A
+    db 'lX         Load from tape to address X', $0A
+    db 'b          Boots from floppy', $0A
+    db 'v          Display version string', $0A
+    db 'h          Display this message', $0A
+    db 'x          Performs soft reset', $0A, $0A
     db 'Arguments in square brackets are optional', $0A
-    db 'Arguments are interpreted as hexadecimal.', $0A
-    db 'Arguments prefixed with # are interpreted as decimal.', $0A, $00
+    db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
+    db 'Numbers are interpreted as hexadecimal.', $0A
+    db 'Numbers prefixed with # are interpreted as decimal.', $0A, $00
 endif
     
 str_cls:
@@ -218,7 +218,7 @@ fdc_home:
 ; prints all characters from HL to the next zero byte
 printString:
     ld A, (HL) ; fetch byte
-    cp 0
+    or A  ; compare with zero
     ret Z ; if byte is zero, we are done
     
     cp TERM_LF ; if byte is LF, we need to go to next line
@@ -383,7 +383,7 @@ parseDecimal:
 parseHexWord:
     ld DE, 0
     ld A, C
-    cp 0
+    or A  ; compare with zero
     jp Z, setCarryReturn ; no bytes for parsing -> error return
     
     ld A, (HL)
@@ -412,6 +412,9 @@ _parseHexWord_loop:
     ld A,E
     add B
     ld E,A
+    ld A,D ; add carry bit to D
+    adc 0
+    ld D,A
     
     inc HL
     dec C
@@ -432,7 +435,7 @@ _parseHexWord_loop:
 parseDecWord:
     ld DE, 0
     ld A, C
-    cp 0
+    or A  ; compare with zero
     jp Z, setCarryReturn ; no bytes for parsing -> error return
     
     ld A, (HL)
@@ -466,6 +469,9 @@ _parseDecWord_loop:
     ld A,E
     add B
     ld E,A
+    ld A,D ; add carry bit to D
+    adc 0
+    ld D,A
     
     inc HL
     dec C
@@ -589,7 +595,7 @@ monitorPrompt_loop:
     call readString ; read user input
     
     ld A,C ; user entered nothing. prompt again
-    cp 0
+    or A  ; compare with zero
     jp Z, monitorPrompt_loop
     
     call printNewLine ; insert a new line after user entered a command
@@ -705,7 +711,7 @@ _command_version_loop:
     and $7F
     xor $10
     
-    cp 0
+    or A  ; compare with zero
     jp Z, monitorPrompt_loop
     
     call printChar
@@ -718,8 +724,8 @@ _command_version_loop:
     
 ; monitor command to jump to given location
 command_run:
-    ; store the ASCII-coded number at (HL) in the DE register pair
-    call parseNumber
+    ; parse expression in input buffer and store result in DE
+    call expression
     
     ex DE, HL
     jp (HL) ; we are leaving the monitor here. no need to jump back to loop
@@ -728,7 +734,7 @@ command_run:
     
 ; monitor command that loads the first record on tape into memory
 command_load:
-    call parseNumber ; destination address
+    call expression ; destination address
 
     ; first, we need to set up the PIT C0 to count the time between two zero
     ; crossings in the tape signal
@@ -783,26 +789,23 @@ command_boot:
 ; prints contents of memory location given by parameter
 ; (may be an address range)
 command_examine:
-    call parseNumber
+    call expression
     call skipWhites
     push DE
     
     ld A,C
-    cp 0
+    or A  ; compare with zero
     jp Z, _command_examine_print ; no more arguments -> start printing
 
     ld A,(HL) ; load remaining char
-    cp MON_RANGE
-    jp NZ, monitor_syntaxError ; remaining char is not range indicator -> error
+    cp MON_ARGUMENT_SEPERATOR
+    jp NZ, monitor_syntaxError ; remaining char is not , -> error
     
     inc HL ; move pointer to next byte
     dec C
     call skipWhites
     
-    ; with no bytes bytes remaining in input buffer, this sets DE to 0, so
-    ; the command eXXXX- would print the whole memory, starting from XXXX and
-    ; rolling over at FFFF
-    call parseNumber
+    call expression
     
 _command_examine_print:
     inc DE ; since we want the upper address to be inclusive
@@ -856,7 +859,7 @@ _command_examine_print_noLf:
 ; TODO: this routine is completely messed up, so it would be nice if someone
 ; could clean up this piece of code
 command_store:
-    call parseNumber
+    call expression
     ex DE, HL
     
     ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
@@ -924,29 +927,29 @@ _command_store_noLf:
 
     
 command_copy:
-    call parseNumber ; parse source address
+    call expression ; parse source address
     call skipWhites
     push DE
     
     ld A,(HL) ; load remaining char
-    cp MON_RANGE
-    jp NZ, monitor_syntaxError ; remaining char is not range indicator -> error
+    cp MON_ARGUMENT_SEPERATOR
+    jp NZ, monitor_syntaxError ; remaining char is not , -> error
     inc HL
     dec C
     call skipWhites
     
-    call parseNumber ; parse destination address
+    call expression ; parse destination address
     call skipWhites
     push DE
     
     ld A,(HL) ; load remaining char
-    cp MON_COUNT
-    jp NZ, monitor_syntaxError ; remaining char is not count indicator -> error
+    cp MON_ARGUMENT_SEPERATOR
+    jp NZ, monitor_syntaxError ; remaining char is not , -> error
     inc HL
     dec C
     call skipWhites
     
-    call parseNumber ; parse byte count
+    call expression ; parse byte count
     ld B, D ; store count in byte counter
     ld C, E
     pop DE
@@ -993,12 +996,12 @@ subtract:
     
 ; HL = HL * DE
 multiply:
-    ld HL, $DEAD
+    ld HL, $0000
     ret
 
 ; HL = HL/DE
 divide:
-    ld HL, $DEAD
+    ld HL, $0000
     ret
     
     
@@ -1010,12 +1013,12 @@ expression:
 _expression_loop:
     ld A,C ; chars remaining?
     or A
-    ret Z
+    jp Z, _expression_end
     ld A,(HL)
     cp '+'
     jp Z,_expression_add
     cp '-'
-    ret NZ
+    jp NZ, _expression_end
     
     push DE
     inc HL
@@ -1039,6 +1042,10 @@ _expression_add:
     ex DE,HL
     ld HL,(WORDSTOR)
     jp _expression_loop
+    
+_expression_end:
+    ld (ANSWER),DE
+    ret
     
     
     
@@ -1086,6 +1093,8 @@ factor:
     ld A,(HL)
     cp '('
     jp Z, _factor_expression
+    cp '$'
+    jp Z, _factor_answer
     
     call parseNumber
     jp _factor_end
@@ -1099,6 +1108,12 @@ _factor_expression:
     jp NZ,monitor_syntaxError
     inc HL
     dec C
+    jp _factor_end
+    
+_factor_answer:
+    inc HL
+    dec C
+    ld DE,(ANSWER)
     
 _factor_end:
     call skipWhites
@@ -1108,7 +1123,7 @@ _factor_end:
     
         
 shovelknight_size equ shovelknight_rom_end - shovelknight_rom
-shovelknight_ram equ ROM_END
+shovelknight_ram equ ANSWER
 shovelknight_ram_end equ shovelknight_ram + shovelknight_size
         
 monitorToRam:
