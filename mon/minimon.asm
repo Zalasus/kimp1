@@ -1,35 +1,41 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 1.0
+;           VERSION 0.1
 ;
 ;       for the KIMP1 system
 ;
-;      written for GNU z80asm
+;  written for the zmac assembler
 ;
 ;      Copyleft 2016 Zalasus
 ;       all wrongs reversed
 ;-----------------------------------
 
+z80
 
-; include definition file for KIMP1 computer
-include "../kimp1def.inc"
+    org $0000
+
+    ; include definition file for KIMP1 computer
+    include "../kimp1def.inc"
 
 ; general pre-assembly-configuration 
 CONF_INCLUDE_HELP:     equ 1    ; set to zero to save a few bytes of ROM
 CONF_RESET_ON_STARTUP: equ 0    ; will clear memory on startup if set to one
-    
-UART_BAUDRATE: equ 9600
-UART_PRESCALE: equ 1      ; not used ATM
-UART_DIV_VAL:  equ (CPU_SPEED/UART_PRESCALE)/UART_BAUDRATE - 1
+
+; UART configuration (data format is always 8 data, 1 stop, no parity)
+CONF_UART_BAUDRATE: equ 9600
+CONF_UART_PRESCALE: equ 1      ; possible values are 1, 16 and 64
+
+
 
 ; terminal characters
-TERM_LF:    equ $0A ; linefeed
-TERM_CR:    equ $0D ; carriage return
-TERM_BS:    equ $08 ; backspace
-TERM_DEL:   equ $7F ; delete
-TERM_NULL:  equ $00 ; null
-TERM_SPACE: equ $20 ; space
+TERM_LF:     equ $0A ; linefeed
+TERM_CR:     equ $0D ; carriage return
+TERM_BS:     equ $08 ; backspace (used to move cursor left one char)
+TERM_DEL:    equ $7F ; delete
+TERM_NULL:   equ $00 ; null
+TERM_SPACE:  equ $20 ; space
+TERM_RUBOUT: equ $20 ; whatever character is not visible (space, del or whatever)
 
 ; monitor command characters
 MON_COM_RUN:       equ 'r'
@@ -40,6 +46,7 @@ MON_COM_EXAMINE:   equ 'e'
 MON_COM_STORE:     equ 's'
 MON_COM_HELP:      equ 'h'
 MON_COM_COPY:      equ 'c'
+MON_COM_PRINT:     equ 'p'
 MON_COM_SOFTRESET: equ 'x'
 
 ; Other monitor characters
@@ -49,13 +56,26 @@ MON_ANSWER:             equ '$'
 MON_ARGUMENT_SEPERATOR: equ ','
 MON_ADDRESS_SEPARATOR:  equ ':'
 
+
+UART_DIV_VAL:  equ (CPU_SPEED/CONF_UART_PRESCALE)/CONF_UART_BAUDRATE - 1
+if CONF_UART_PRESCALE == 1
+    UART_MODE_INSTRUCTION: equ $4D  ; %01001101
+endif
+if CONF_UART_PRESCALE == 16
+    UART_MODE_INSTRUCTION: equ $4E  ; %01001110
+endif
+if CONF_UART_PRESCALE == 64
+    UART_MODE_INSTRUCTION: equ $4F  ; %01001111
+endif
+
+
 MON_INPUT_BUFFER:      equ ROM_END ; command line input buffer in HIMEM
 MON_INPUT_BUFFER_SIZE: equ $100 ; 256 bytes
 MON_EXPR_WORDSTOR:     equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage for expression parser
 MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expression
 
 
-org $0000
+;    org $0000
     
 ; monitor jump vector
 
@@ -78,6 +98,17 @@ org $0000
     
 main:
 
+    ; The CPU recovers from the reset faster than the TCCR
+    ;  This delay loop prevents any mishaps (like TCCR missing the first write)
+    ;  After experimenting, 2^16 counts seems reasonable. 256 were too few.
+    ld HL, 0
+_setup_loop:
+    inc HL
+    ld A, H
+    or L
+    jp nz, _setup_loop
+    
+
     ld HL, RAM_END ; init stackpointer to end of memory
     ld SP,HL
 
@@ -96,10 +127,10 @@ _soft_reset_loop:
     ld (HL), $00
     inc HL
     ld A,H
-    cp high RAM_END
+    cp RAM_END >> 8
     jp NZ,_soft_reset_loop
     ld A,L
-    cp low RAM_END
+    cp RAM_END & $00FF
     jp NZ,_soft_reset_loop
     
     
@@ -113,8 +144,8 @@ _soft_reset_loop:
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 1.0  FOR KIMP1', $0A
-    db '  WRITTEN BY ZALASUS  ', $0A, $00
+    db 'MINIMON 0.1 FOR KIMP1', $0A
+    db ' WRITTEN BY ZALASUS', $0A, $00
     
 str_pressPlayOnTape:
     db 'PRESS PLAY ON TAPE', $0A, $00
@@ -128,18 +159,22 @@ str_unknownCommand:
 str_syntaxError:
     db 'SYNTAX ERROR', $0A, $00
     
+str_driveError:
+    db 'DRIVE ERROR', $0A, $00
+
 str_help:
 if CONF_INCLUDE_HELP == 0
     db 'NO HELP AVAILABLE', $0A, $00
 else
-    db 'eS[,E]     Examine address S to E', $0A
-    db 'sX         Store to address X', $0A
-    db 'rX         Execute program at X', $0A
-    db 'cS,D,C     Copy C bytes from S to D', $0A
-    db 'lX         Load from tape to address X', $0A
-    db 'b          Boots from floppy', $0A
+    db 'e S [,E]   Examine address S to E', $0A
+    db 's X        Store to address X', $0A
+    db 'r X        Execute program at X', $0A
+    db 'c S, D, C  Copy C bytes from S to D', $0A
+    db 'l X        Load from tape to address X', $0A
+    db 'b          Boot from floppy', $0A
     db 'v          Display version string', $0A
     db 'h          Display this message', $0A
+    db 'p X        Parses and prints X', $0A
     db 'x          Performs soft reset', $0A, $0A
     db 'Arguments in square brackets are optional', $0A
     db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
@@ -149,8 +184,7 @@ else
 endif
     
 str_cls:
-    db $1B
-    db '[2J', $00 ; the VT100 way to clear screen
+    db $1B, '[2J', $00 ; the VT100 way to clear screen
     
 
     
@@ -159,9 +193,10 @@ str_cls:
 ; prints the character stored in A. trashes B.
 printChar:
     ld B,A
+_printChar_wait:
     in A, (IO_UART_COM) ; read in status byte of UART
-    and $01 ; mask out all bits except the TXRDY bit
-    jp Z,printChar ; do this until UART is ready
+    and [1 << BIT_UART_TXRDY] ; mask out all bits except the TXRDY bit
+    jp Z,_printChar_wait ; do this until UART is ready
     
     ; UART is ready to send another byte now
     ld A,B
@@ -176,7 +211,7 @@ printChar:
 ; program execution halts until char was read.
 readChar:
     in A, (IO_UART_COM) ; read in status byte of UART
-    and $02 ; mask out all bits except the RXRDY bit
+    and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
     jp Z,readChar ; do this until UART has a valid byte
     
     in A,(IO_UART_DAT) ; read in data byte
@@ -282,10 +317,10 @@ _readString_backspace:
     ; TODO: Do this with string. takes less calls and loads
     ld A, TERM_BS
     call printChar ; echo the BS to move cursor back one char...
-    ld A, TERM_NULL
-    call printChar ; overwrite the last entered char with NULL...
+    ld A, TERM_RUBOUT
+    call printChar ; overwrite the last entered char with rubout character...
     ld A, TERM_BS
-    call printChar ; and place cursor over the null char again
+    call printChar ; and place cursor over the rubout char again
     
     dec C ; buffer minus one
     dec HL
@@ -314,7 +349,6 @@ printNewLine:
     
 ; clears the screen
 clearScreen:
-    call printChar
     ld HL, str_cls
     call printString
     ret
@@ -549,21 +583,19 @@ monitorStart:
     ; initialize TCCR and perform an IO-RESET before initializing peripherals
     ld A, [1 << BIT_IO_RESET]; set only IO-RESET bit to one
     out (IO_TCCR),A
-    nop ; keep the IO-RESET line high for at least 8 clock pulses ( = 4 T-States = 4 NOPs)
+    nop ; keep the IO-RESET line high for at least 8 clock pulses ( = 2 NOPs)
     nop
-    nop
-    nop
-    ld A, 0 ; clear IO-RESET bit
+    xor A ; clear all TCCR bits, including IO-RESET bit
     out (IO_TCCR),A
     ; TCCR is now initialized and IO-Devices are reset
     
     ; PIT 2 is connected to UART, so set it up for baud rate generation
-    ld A, %10000100  ; set counter 2 in mode 2, binary counting
+    ld A, $B6 ; %10110110  ; set counter 2 in mode 3, binary counting
     out (IO_PIT_CTRL), A
-    ; write divider value to counter
-    ld A, high UART_DIV_VAL
-    out (IO_PIT_C2), A
+    ; write divider value to counter (first LSB, then MSB as set in command above)
     ld A, low UART_DIV_VAL
+    out (IO_PIT_C2), A
+    ld A, high UART_DIV_VAL
     out (IO_PIT_C2), A
     ; registers for counter are set. now we can gate the counter
     in A,(IO_TCCR)
@@ -572,15 +604,15 @@ monitorStart:
     out (IO_TCCR), A ; C2 is now counting
     
     ; write mode byte to UART (first command byte after reset)
-    ld A, %01001110   ; 8 data bits, 1 stop bit, no parity, 1 x prescaler
+    ld A, UART_MODE_INSTRUCTION
     out (IO_UART_COM), A 
-    ; enable receiver and transmitter
-    ld A, [1 << BIT_TXEN] | [1 << BIT_RXEN]
+    ; enable receiver and transmitter.
+    ;  also, set /DTR of UART to 1. Indicator LED should turn off, giving visual feedback that CPU is alive
+    ld A, [(1 << BIT_UART_TXEN) | (1 << BIT_UART_RXEN) | (1 << BIT_UART_DTR)]
     out (IO_UART_COM), A
-    
+
     ; IO-Devices are now initialized
     
-  
     call clearScreen
   
 monitor_welcome:
@@ -632,6 +664,9 @@ monitorPrompt_loop:
     cp MON_COM_HELP
     jp Z, command_help
     
+    cp MON_COM_PRINT
+    jp Z, command_print
+
     cp MON_COM_SOFTRESET
     jp Z, soft_reset
     
@@ -741,10 +776,15 @@ _command_load_tapeLoop:
     ld C,A
     
     
-    xor B 
+    xor B
 
     
     ;......
+
+    ; turn off motor
+    in A,(IO_TCCR)
+    and IO_TCCR_WRITE_MASK & ~[1 << BIT_TAPE_MOTOR]
+    out (IO_TCCR), A
     
     jp monitorPrompt_loop ; jump back to monitor loop
 
@@ -756,7 +796,7 @@ command_boot:
 
     
 ; prints contents of memory location given by parameter
-; (may be an address range)
+;  (may be an address range)
 command_examine:
     call expression
     call skipWhites
@@ -824,9 +864,9 @@ _command_examine_print_noLf:
     
 
 ; used to enter an arbitrary amount of bytes starting from a given 
-; address (first argument). accepts only hex chars.
+;  address (first argument). accepts only hex chars.
 ; TODO: this routine is completely messed up, so it would be nice if someone
-; could clean up this piece of code
+;  could clean up this piece of code
 command_store:
     call expression
     ex DE, HL
@@ -948,6 +988,8 @@ _command_print_loop:
     jp NZ,_command_print_loop
     
     jp monitorPrompt_loop
+
+
 
 
 ; HL = HL - DE
@@ -1077,10 +1119,12 @@ shovelknight_rom:
     jp monitorPrompt_loop ; shovelknight is done
 
 shovelknight_rom_end:
+monitor_end:
     
-    org ROM_END
-    
-    end
+    ; pad out file for maximum rom size
+    dc [8192 - monitor_end], $ff
+
+    end main
 
     
     
