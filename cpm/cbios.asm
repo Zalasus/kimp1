@@ -69,7 +69,7 @@ _const_notReady:
 conout:
     in A, (IO_UART_COM) ; read in status byte of UART
     and $01 ; mask out all bits except the TXRDY bit
-    jp Z,printChar ; do this until UART is ready
+    jp Z, conout ; do this until UART is ready
     
     ; UART is ready to send another byte now
     ld A,C
@@ -93,9 +93,9 @@ conin:
 ; prints CRLF characters
 printNewLine:
     ld A, $0A
-    call printChar
+    call conout
     ld A, $0D
-    call printChar
+    call conout
     ret
     
 printString:

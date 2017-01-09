@@ -70,60 +70,66 @@ IO_TCCR_WRITE_MASK:  equ $3D
 IO_FDC_STAT: equ $30
 IO_FDC_DATA: equ $31
 IO_FDC_OPER: equ $32
-IO_FDC_CONT: equ $33
+IO_FDC_CONT: equ $33 ; write only
+
+; master status register bits
+BIT_FDC_FDD0_BUSY:          equ 0
+BIT_FDC_FDD1_BUSY:          equ 1
+BIT_FDC_FDD2_BUSY:          equ 2
+BIT_FDC_FDD3_BUSY:          equ 3
+BIT_FDC_BUSY:               equ 4
+BIT_FDC_EXCEC_MODE:         equ 5
+BIT_FDC_DATA_INPUT:         equ 6
+BIT_FDC_REQUEST_FOR_MASTER: equ 7
 
 ; operation register bits
-BIT_DRIVE_SELECT:      equ 0
-BIT_SOFT_RESET:        equ 2
-BIT_DMA_ENABLE:        equ 3
-BIT_MOTOR_ON_ENABLE_1: equ 4
-BIT_MOTOR_ON_ENABLE_2: equ 5
-BIT_MODE_SELECT:       equ 7
+BIT_FDC_DRIVE_SELECT:      equ 0
+BIT_FDC_SOFT_RESET:        equ 2
+BIT_FDC_DMA_ENABLE:        equ 3
+BIT_FDC_MOTOR_ON_ENABLE_1: equ 4
+BIT_FDC_MOTOR_ON_ENABLE_2: equ 5
+BIT_FDC_MODE_SELECT:       equ 7
 
-; status register 0 bits
-BIT_FDD0_BUSY:          equ 0
-BIT_FDD1_BUSY:          equ 1
-BIT_FDD2_BUSY:          equ 2
-BIT_FDD3_BUSY:          equ 3
-BIT_FDC_BUSY:           equ 4
-BIT_EXCEC_MODE:         equ 5
-BIT_DATA_INPUT:         equ 6
-BIT_REQUEST_FOR_MASTER: equ 7
+; control register bits
+BIT_FDC_DATARATE0:       equ 0
+BIT_FDC_DATARATE1:       equ 1
+BIT_FDC_DISABLE_PRECOMP: equ 2
+
+; status register 0 bits (note: this was denoted MSR in datasheet. further note: datasheet is crap)
+BIT_FDC_UNIT_SELECT_2:          equ 0
+BIT_FDC_UNIT_SELECT_1:          equ 1
+BIT_FDC_HEAD_SELECT:            equ 2
+BIT_FDC_WRITE_PROTECTED:        equ 3
+BIT_FDC_TRACK_0:                equ 4
+BIT_FDC_READY:                  equ 5
+BIT_FDC_WRITE_PROTECTED_LEGACY: equ 6
+BIT_FDC_UNUSED:                 equ 7
 
 ; status register 1 bits
-BIT_UNIT_SELECT_2:   equ 0
-BIT_UNIT_SELECT_1:   equ 1
-BIT_HEAD_SELECT:     equ 2
-BIT_NOT_READY:       equ 3
-BIT_EQUIPMENT_CHECK: equ 4
-BIT_SEEK_END:        equ 5
-BIT_INTERRUPT_CODE:  equ 7
+BIT_FDC_SR1_UNIT_SELECT_2: equ 0
+BIT_FDC_SR1_UNIT_SELECT_1: equ 1
+BIT_FDC_HEAD_SELECT:       equ 2
+BIT_FDC_NOT_READY:         equ 3
+BIT_FDC_EQUIPMENT_CHECK:   equ 4
+BIT_FDC_SEEK_END:          equ 5
+BIT_FDC_INTERRUPT_CODE:    equ 7
 
 ; status register 2 bits
-BIT_MISSING_ADRESS_MARK: equ 0
-BIT_NOT_WRITEABLE:       equ 1
-BIT_NO_DATA:             equ 2
-BIT_OVERRUN:             equ 4
-BIT_DATA_ERROR:          equ 5
-BIT_END_OF_CYLINDER:     equ 7
+BIT_FDC_MISSING_ADRESS_MARK: equ 0
+BIT_FDC_NOT_WRITEABLE:       equ 1
+BIT_FDC_NO_DATA:             equ 2
+BIT_FDC_OVERRUN:             equ 4
+BIT_FDC_DATA_ERROR:          equ 5
+BIT_FDC_END_OF_CYLINDER:     equ 7
 
 ; status register 3 bits
-BIT_MISSING_ADRESS_MARK_IN_DATA_FIELD: equ 0
-BIT_BAD_CYLINDER:                      equ 1
-BIT_SCAN_NOT:                          equ 2
-BIT_SCAN_EQUAL:                        equ 3
-BIT_WRONG_CYLINDER:                    equ 4
-;BIT_DATA_ERROR:                        equ 5
-BIT_CONTROL_MARK:                      equ 6
-
-; master status register
-;BIT_UNIT_SELECT_2:          equ 0
-;BIT_UNIT_SELECT_1:          equ 1
-;BIT_HEAD_SELECT:            equ 2
-BIT_WRITE_PROTECTED:        equ 3
-BIT_TRACK_0:                equ 4
-BIT_READY:                  equ 5
-BIT_WRITE_PROTECTED_LEGACY: equ 6
+BIT_FDC_MISSING_ADRESS_MARK_IN_DATA_FIELD: equ 0
+BIT_FDC_BAD_CYLINDER:                      equ 1
+BIT_FDC_SCAN_NOT:                          equ 2
+BIT_FDC_SCAN_EQUAL:                        equ 3
+BIT_FDC_WRONG_CYLINDER:                    equ 4
+BIT_FDC_SR3_DATA_ERROR:                    equ 5
+BIT_FDC_CONTROL_MARK:                      equ 6
 
 
 

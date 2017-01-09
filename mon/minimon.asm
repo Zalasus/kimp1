@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.1
+;           VERSION 0.2
 ;
 ;       for the KIMP1 system
 ;
@@ -38,16 +38,18 @@ TERM_SPACE:  equ $20 ; space
 TERM_RUBOUT: equ $20 ; whatever character is not visible (space, del or whatever)
 
 ; monitor command characters
-MON_COM_RUN:       equ 'r'
-MON_COM_LOAD:      equ 'l'
-MON_COM_BOOT:      equ 'b'
-MON_COM_VERSION:   equ 'v'
-MON_COM_EXAMINE:   equ 'e'
-MON_COM_STORE:     equ 's'
-MON_COM_HELP:      equ 'h'
-MON_COM_COPY:      equ 'c'
-MON_COM_PRINT:     equ 'p'
-MON_COM_SOFTRESET: equ 'x'
+MON_COM_RUN:        equ 'r'
+MON_COM_LOAD:       equ 'l'
+MON_COM_BOOT:       equ 'b'
+MON_COM_VERSION:    equ 'v'
+MON_COM_EXAMINE:    equ 'e'
+MON_COM_STORE:      equ 's'
+MON_COM_HELP:       equ 'h'
+MON_COM_COPY:       equ 'c'
+MON_COM_INPUT_HEX:  equ 'i'
+MON_COM_OUTPUT_HEX: equ 'o'
+MON_COM_PRINT:      equ 'p'
+MON_COM_SOFTRESET:  equ 'x'
 
 ; Other monitor characters
 MON_PROMPT:             equ '>'
@@ -74,33 +76,45 @@ MON_INPUT_BUFFER_SIZE: equ $100 ; 256 bytes
 MON_EXPR_WORDSTOR:     equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage for expression parser
 MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expression
 
+    org $0000
 
-;    org $0000
-    
-; monitor jump vector
+; ------------- monitor jump vector -------------
 
     jp main
     jp monitorToRam
     jp printChar
     jp readChar
+    jp hasChar
     jp printString
     jp readString
     jp clearScreen
+    jp printHex
+    jp readHex
     jp 0
     jp 0
     jp 0
     jp 0
     jp 0
-    jp 0
-    jp 0
-    jp 0
-    jp 0
+    jp monitorPrompt_loop
+
+; ------------ Interrupt vector ---------
+
+    org $0038
+
+    jp isr_38   ; interrupt vector for interrupt mode 1 
+
+; ------------- Interrupt service routines ----------
+
+isr_38:
     
+
+
 main:
 
     ; The CPU recovers from the reset faster than the TCCR
     ;  This delay loop prevents any mishaps (like TCCR missing the first write)
     ;  After experimenting, 2^16 counts seems reasonable. 256 were too few.
+    ;  Maybe a smaller cap in the reset circuit would do. 10uF is bit overkill, really.
     ld HL, 0
 _setup_loop:
     inc HL
@@ -127,10 +141,10 @@ _soft_reset_loop:
     ld (HL), $00
     inc HL
     ld A,H
-    cp RAM_END >> 8
+    cp high RAM_END
     jp NZ,_soft_reset_loop
     ld A,L
-    cp RAM_END & $00FF
+    cp low RAM_END
     jp NZ,_soft_reset_loop
     
     
@@ -144,7 +158,7 @@ _soft_reset_loop:
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.1 FOR KIMP1', $0A
+    db 'MINIMON 0.2 FOR KIMP1', $0A
     db ' WRITTEN BY ZALASUS', $0A, $00
     
 str_pressPlayOnTape:
@@ -159,28 +173,51 @@ str_unknownCommand:
 str_syntaxError:
     db 'SYNTAX ERROR', $0A, $00
     
-str_driveError:
-    db 'DRIVE ERROR', $0A, $00
+str_diskError:
+    db 'DISK ERROR', $0A, $00
+
+str_fdcError:
+    db 'DISK CONTROLLER ERROR', $0A, $00
+
+str_readingHex:
+    db 'READING HEX...', $0A, $00
+
+str_hexOK:
+    db 'HEX OK', $0A, $00
+
+str_hexError:
+    db 'HEX ERROR', $0A, $00
+
+str_hexChecksumError:
+    db 'HEX CHECKSUM ERROR', $0A, $00
+
+str_notImplemented:
+    db 'NOT IMPLEMENTED CAUSE ZAL IS A LAZY ASS', $0A, $00
 
 str_help:
 if CONF_INCLUDE_HELP == 0
     db 'NO HELP AVAILABLE', $0A, $00
 else
+    db 'First character of input denotes command' , $0A
+    db 'Whitespace is always optional', $0A
+    db 'Defined commands:', $0A
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
     db 'r X        Execute program at X', $0A
     db 'c S, D, C  Copy C bytes from S to D', $0A
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A
-    db 'v          Display version string', $0A
-    db 'h          Display this message', $0A
+    db 'v          Show version', $0A
+    db 'h          Show this message', $0A
     db 'p X        Parses and prints X', $0A
-    db 'x          Performs soft reset', $0A, $0A
-    db 'Arguments in square brackets are optional', $0A
+    db 'i          Starts reading of Intel HEX', $0A
+    db 'o S [,E]   Dumps S to E as Intel HEX', $0A
+    db 'x          Soft reset', $0A
+    db 'Arguments in square brackets optional', $0A
     db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
     db '$ is the last parsed number', $0A
-    db 'Numbers are interpreted as hexadecimal.', $0A
-    db 'Numbers prefixed with # are interpreted as decimal.', $0A, $00
+    db 'Numbers interpreted as hexadecimal', $0A
+    db 'Prefix with # for decimal', $0A, $00
 endif
     
 str_cls:
@@ -192,6 +229,7 @@ str_cls:
 
 ; prints the character stored in A. trashes B.
 printChar:
+conout:
     ld B,A
 _printChar_wait:
     in A, (IO_UART_COM) ; read in status byte of UART
@@ -208,8 +246,9 @@ _printChar_wait:
     
     
 ; reads one character from the UART and stores it in A. the char is not echoed.
-; program execution halts until char was read.
+;  program execution halts until char was read.
 readChar:
+conin:
     in A, (IO_UART_COM) ; read in status byte of UART
     and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
     jp Z,readChar ; do this until UART has a valid byte
@@ -218,22 +257,53 @@ readChar:
     
     ret
     
-    
-    
+; checks whether UART holds a character that is ready to be read
+;  sets A to $ff if char is available, $00 if not.
+hasChar:
+const:
+    in A, (IO_UART_COM) ; read in status byte of UART
+    and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
+    jp Z, _hasChar_no
+    ld A, $ff
+    ret
+_hasChar_no:
+    xor A
+    ret
     
 ;------------------------------DISK IO---------------------------------
 
 ; initializes the FDC to AT/EISA mode, setting data rate etc.
+;  sets A to 00 if initialized successfully or to FF in case of an error
 fdc_init:
     ; we assume the FDC is still in reset-mode
-    ld A, [1 << BIT_SOFT_RESET] ; we don't want soft reset (active low)
-    out (IO_FDC_OPER),A ; writing to operations reg initializes AT/EISA-Mode
+
+    ; bit 7 in MSR should always be 0 while bit 5 should always be 1.
+    ;  use this to detect whether FDC is actually present
+    in A, (IO_FDC_STAT) ; read master status register
+    and [1 << BIT_FDC_UNUSED] | [1 << BIT_FDC_READY]
+    cp [1 << BIT_FDC_READY]
+    jp z, _fdc_init_noerror
+
+    ; didn't get expected pattern -> error
+    ld A, $ff
+    ret
+
+_fdc_init_noerror:
+    ; FDC present. Write to op register to initialize AT compatible mode
+    ld A, [1 << BIT_FDC_SOFT_RESET] ; we don't want soft reset (active low)
+    out (IO_FDC_OPER), A
     
+    ; initalize data rate etc.
+    
+    
+    xor A
     ret
 
     
+
 ; moves the drive specified by B to home sector
 fdc_home:
+    call fdc_handshake_input
     ld A, $07 ; recalibrate command
     out (IO_FDC_DATA), A
     ld A, B
@@ -248,6 +318,21 @@ fdc_home:
     
     ret    
     
+; Handshaking procedure for writing to data reg. Waits for Request For Master bit in MSR to go high
+;  Also checks the data direction bit and reports an error if unexpected direction is requested.
+fdc_handshake_input:
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
+    jp z, fdc_handshake_input ; according to the crap datasheet, we should wait 12us when taking branch
+    bit BIT_FDC_DATA_INPUT, A
+    jp nz, fdc_error ; DIO = 1 -> data register expects to be read, which is the opposite of what we want to do 
+    ret
+
+fdc_error:
+    ld HL, str_fdcError
+    call printString
+    ret
+
 ;----------------------------------------------------------------------  
     
     
@@ -368,7 +453,7 @@ parseDecimal:
     ret
     
 ; parses a single hex character in A, stores result in A. Accepts both upper-
-;  and lowercase characters. If a non-hex character is found, A is set to $FF.
+;  and lowercase characters. If a non-hex character is found, A is set to $FF
 parseHex:
     cp $30
     jp M, _parseHex_noDigit ; char is < '0'
@@ -400,8 +485,30 @@ _parse_error:
     ld A, $FF
     ret
     
-    
 
+; reads two hex characters from console and stores result in A. Trashes B
+;  sets carry bit if invalid characters are read.
+readHex:
+    call readChar
+    call parseHex
+    cp $ff
+    jp z, setCarryReturn
+
+    ; shift left by 4
+    add A 
+    add A
+    add A
+    add A
+    ld B,A
+
+    call readChar
+    call parseHex
+    cp $ff
+    jp z, setCarryReturn
+    
+    or B
+    
+    jp resetCarryReturn
 
     
     
@@ -633,6 +740,8 @@ monitorPrompt_loop:
     
     call printNewLine ; insert a new line after user entered a command
     
+    call skipWhites ; skip whitespace at beginning of command
+
     ; process user input
     ld B,(HL) ; load fist byte entered
     inc HL ; move HL to next byte
@@ -666,6 +775,12 @@ monitorPrompt_loop:
     
     cp MON_COM_PRINT
     jp Z, command_print
+
+    cp MON_COM_INPUT_HEX
+    jp Z, command_input_hex
+
+    cp MON_COM_OUTPUT_HEX
+    jp Z, command_output_hex
 
     cp MON_COM_SOFTRESET
     jp Z, soft_reset
@@ -716,6 +831,7 @@ _parseNumber_hex:
 ;--------------------Monitor command definition area----------------------
 ; NOTE: These are not CALL-ed! 
 ; In the end of each command, simply jump back to monitorPromt_loop
+; The stack is always empty when the monitor jumps to these routines
 
 
 ; prints help message
@@ -769,8 +885,6 @@ _command_load_tapeLoop:
     ; second, compare it with the previous state
     sub B
     jp P, _command_load_tapeLoop 
-    ; TODO: this is unsafe. me might miss a transition. we
-    ; need an interrupt based version of some sort
     
     ; now we store the current state
     ld C,A
@@ -791,6 +905,9 @@ _command_load_tapeLoop:
     
 ; loads the first sector from fdd 0 into memory and jumps to the loaded code
 command_boot:
+
+    ld HL, str_notImplemented
+    call printString
 
     jp monitorPrompt_loop
 
@@ -828,6 +945,11 @@ _command_examine_print:
     call printAdressToken
     
 _command_examine_print_loop:
+
+    ; check if user terminated printing
+    call hasChar
+    or A
+    jp nz, monitorPrompt_loop
 
     ld A, (HL)
     call printHex
@@ -969,6 +1091,151 @@ command_copy:
     jp monitorPrompt_loop
     
     
+
+command_input_hex:
+
+    ld HL, str_readingHex
+    call printString
+
+_hex_record_start:
+    ld D, $00  ; initialize D for checksum calculation
+    ; wait until start code is read
+_hex_waitForStart:
+    call readChar
+    cp ':'
+    jp nz, _hex_waitForStart
+    
+    ; byte count
+    call readHex
+    jp c, _hex_error
+    ld C, A        ; store byte count in C
+    add D  ; add to checksum
+    ld D, A
+
+    ; address. store it in HL
+    call readHex
+    jp c, _hex_error
+    ld H, A
+    add D  ; add to checksum
+    ld D, A
+    call readHex
+    jp c, _hex_error
+    ld L, A
+    add D  ; add to checksum
+    ld D, A
+
+    ; record type
+    call readHex
+    jp c, _hex_error
+    ld B, A  ; buffer in B
+    add D  ; add to checksum
+    ld D, A
+    ld A, B ; restore
+    cp $00
+    jp z, _hex_data
+    cp $01
+    jp z, _hex_eof
+    jp _hex_error ; unrecognized record type
+
+
+_hex_data:
+    
+    ld A, C ; check if byte count was zero
+    or A
+_hex_data_loop:
+    jp z, _hex_data_done
+
+    call readHex
+    jp c, _hex_error
+    ld (HL), A  ; store byte
+    add D       ; add byte to D for checksum calculation
+    ld D, A
+
+    dec C
+    inc HL
+
+    jp _hex_data_loop
+
+
+_hex_data_done:
+    ; checksum
+    call readHex
+    jp c, _hex_error
+    ld B, A   ; save checksum in B (we need A to negate D)
+    
+    xor A
+    sub D
+    cp B
+    jp nz, _hex_checksum_error  ; checksum did not match
+
+    ; expect CR or LF line terminator
+    call readChar
+    cp TERM_LF
+    jp z, _hex_record_start
+    cp TERM_CR
+    jp z, _hex_record_start ; got CR. there's likely a LF following, which will get caught when waiting for :
+
+    jp _hex_error
+
+
+_hex_eof:
+    ; expect checksum $ff
+    call readHex
+    cp $ff
+    jp nz, _hex_error
+    
+    ; got expected checksum. we're done reading hex file
+    ld HL, str_hexOK
+    call printString
+
+    jp monitorPrompt_loop
+
+
+_hex_checksum_error
+    ld HL, str_hexChecksumError
+    call printString
+
+    jp monitorPrompt_loop
+
+_hex_error:
+    ld HL, str_hexError
+    call printString
+
+    jp monitorPrompt_loop
+
+
+command_output_hex:
+
+    ld HL, str_notImplemented
+    call printString
+
+    jp monitorPrompt_loop ; not implemented!!!
+
+    call expression
+    call skipWhites
+    push DE
+    
+    ld A,C
+    or A  ; compare with zero
+    jp z, monitor_syntaxError ; no more arguments -> error. we need a range here
+
+    ld A,(HL) ; load remaining char
+    cp MON_ARGUMENT_SEPERATOR
+    jp NZ, monitor_syntaxError ; remaining char is not , -> error
+    
+    inc HL ; move pointer to next byte
+    dec C
+    call skipWhites
+    
+    call expression
+
+    inc DE ; since we want the upper address to be inclusive
+    
+    pop HL
+
+    
+
+
     
 
 command_print:
