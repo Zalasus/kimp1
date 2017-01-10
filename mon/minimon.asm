@@ -727,7 +727,7 @@ _expression_loop:
     cp '+'
     jp z, _expression_add
     cp '-'
-    jp z, _expression_end
+    jp nz, _expression_end
     
     push DE
     inc HL
@@ -796,8 +796,9 @@ _expression_factor_end:
     jp resetCarryReturn
 
 
-; HL = HL - DE
+; HL = HL - DE. DE is not affected
 subtractHLDE:
+    push DE
     ld A, E ; calculate two's complement of DE
     cpl
     ld E, A
@@ -806,6 +807,7 @@ subtractHLDE:
     ld D, A
     inc DE
     add HL, DE
+    pop DE
     ret
 
 
@@ -1368,9 +1370,10 @@ _ohex_data:
     or A
     jp nz, _ohex_count_cap  ; if high byte is not zero, count is definetely greater than 16
     ld A, E
-    cp $10
-    jp p, _ohex_count_cap
+    and $f0
+    jp nz, _ohex_count_cap
     ; D is 0 and E is less than $10 -> print E
+    ld A, E
     call printHex
     jp _ohex_count_end
 _ohex_count_cap:
@@ -1380,14 +1383,22 @@ _ohex_count_cap:
     call printHex
 _ohex_count_end:
     ; HL is now the starting address, DE the capped byte count. End address still on stack
+    add C ; add count to checksum
+    ld C, A
 
     ; address
     ld A, H
     call printHex
     ld A, L
     call printHex
+    
+    ; add address to checksum
+    ld A, C
+    add H
+    add L
+    ld C, A
 
-    ; record type
+    ; record type ( no need to add to checksum since it's 0)
     ld A, $00
     call printHex
 
@@ -1396,6 +1407,10 @@ _ohex_data_loop:
     ld A, E
     or A
     jp z, _ohex_data_end
+
+    call hasChar  ; allow user to abort printing
+    or A
+    jp nz, monitorPrompt_loop
 
     ld A, (HL)
     call printHex
