@@ -203,6 +203,9 @@ str_hexError:
 str_hexChecksumError:
     db 'HEX CHECKSUM ERROR', $0A, $00
 
+str_hexRecordEof:
+    db ':00000001FF', $0A, $00
+
 str_notImplemented:
     db 'NOT IMPLEMENTED CAUSE ZAL IS A LAZY ASS', $0A, $00
 
@@ -934,7 +937,7 @@ monitor_syntaxError:
 ; The stack is always empty when the monitor jumps to these routines
 
 
-; prints help message
+; Prints help message
 command_help:
     ld HL, str_help
     call printString
@@ -942,7 +945,7 @@ command_help:
 
 
 
-; monitor command to jump to given location
+; Monitor command to jump to given location
 command_run:
     ; parse expression in input buffer and store result in DE
     call expression
@@ -953,7 +956,7 @@ command_run:
 
     
     
-; monitor command that loads the first record on tape into memory
+; Loads the first record on tape into memory at given address
 command_load:
     call expression ; destination address
     jp c, monitor_syntaxError
@@ -1006,7 +1009,7 @@ _command_load_tapeLoop:
 
     
 
-; loads the first sector from fdd 0 into memory and jumps to the loaded code
+; Loads the first sector from drive A into memory and jumps to the loaded code
 command_boot:
 
     ld HL, str_notImplemented
@@ -1016,7 +1019,7 @@ command_boot:
 
 
     
-; prints contents of memory location given by parameter
+; Prints contents of memory location given by parameter
 ;  (may be an address range)
 command_examine:
     call expression
@@ -1091,8 +1094,8 @@ _command_examine_print_noLf:
 
     
 
-; used to enter an arbitrary amount of bytes starting from a given 
-;  address (first argument). accepts only hex chars.
+; Used to enter an arbitrary amount of bytes starting from a given 
+;  address (first argument). Accepts only hex chars.
 ; TODO: this routine is completely messed up, so it would be nice if someone
 ;  could clean up this piece of code
 command_store:
@@ -1164,6 +1167,7 @@ _command_store_noLf:
     jp _command_store_loop
 
     
+; Copies block of memory
 command_copy:
     call expression ; parse source address
     jp c, monitor_syntaxError
@@ -1203,7 +1207,6 @@ command_copy:
     
 
 command_input_hex:
-
     ld HL, str_readingHex
     call printString
 
@@ -1314,13 +1317,8 @@ _hex_error:
     jp monitorPrompt_loop
 
 
+
 command_output_hex:
-
-    ld HL, str_notImplemented
-    call printString
-    
-    jp monitorPrompt_loop ; not implemented!!!
-
     call expression
     jp c, monitor_syntaxError
     call skipWhites
@@ -1340,13 +1338,97 @@ command_output_hex:
     
     call expression
     jp c, monitor_syntaxError
-
-    inc DE ; since we want the upper address to be inclusive
     
     pop HL
 
-    
+    ; start address HL, end address DE, C used for checksum
 
+    ; check if range contains bytes. if user entered the same address twice, skip data record
+    ;  and go straight to eof
+    ld A, D
+    cp H
+    jp nz, _ohex_data
+    ld A, E
+    cp L
+    jp nz, _ohex_data
+    jp _ohex_eof
+
+_ohex_data:
+    ld C, $00  ; initialize C for checksum
+
+    ld A,':'
+    call printChar
+    
+    ; calculate and cap byte count at $10 and print it
+    push DE   ; save end address on stack~ we'll need it later
+    ex DE, HL
+    call subtractHLDE
+    ex DE, HL
+    ld A, D
+    or A
+    jp nz, _ohex_count_cap  ; if high byte is not zero, count is definetely greater than 16
+    ld A, E
+    cp $10
+    jp p, _ohex_count_cap
+    ; D is 0 and E is less than $10 -> print E
+    call printHex
+    jp _ohex_count_end
+_ohex_count_cap:
+    ; count was greater or equal 16. cap DE and print $10
+    ld DE, $0010
+    ld A, $10
+    call printHex
+_ohex_count_end:
+    ; HL is now the starting address, DE the capped byte count. End address still on stack
+
+    ; address
+    ld A, H
+    call printHex
+    ld A, L
+    call printHex
+
+    ; record type
+    ld A, $00
+    call printHex
+
+_ohex_data_loop:
+    ; print bytes while E is still > 0
+    ld A, E
+    or A
+    jp z, _ohex_data_end
+
+    ld A, (HL)
+    call printHex
+    add C    ; add to checksum
+    ld C, A
+
+    inc HL
+    dec E
+
+    jp _ohex_data_loop
+
+_ohex_data_end:
+    ;  negate and print checksum and line terminator
+    xor A
+    sub C
+    call printHex
+    call printNewLine
+
+    ; restore end address and check if anything left to print
+    pop DE
+    ld A, D
+    cp H
+    jp nz, _ohex_data
+    ld A, E
+    cp L
+    jp nz, _ohex_data
+
+    ; nothing left -> write eof record
+_ohex_eof:
+    ld HL, str_hexRecordEof
+    call printString
+
+    jp monitorPrompt_loop
 
     
 
