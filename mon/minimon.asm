@@ -15,18 +15,24 @@ z80
 
     org $0000
 
-    ; include definition file for KIMP1 computer
     include "../kimp1def.inc"
 
-; general pre-assembly-configuration 
+
+
+;-------------- PRE-ASSEMBLY CONFIGURATION -------------------
+
+; general configuration 
 CONF_INCLUDE_HELP:     equ 1    ; set to zero to save a few bytes of ROM
 CONF_RESET_ON_STARTUP: equ 0    ; will clear memory on startup if set to one
+CONF_STARTUP_DELAY:    equ 1    ; will delay approx. 1 sec on startup
 
 ; UART configuration (data format is always 8 data, 1 stop, no parity)
 CONF_UART_BAUDRATE: equ 9600
 CONF_UART_PRESCALE: equ 1      ; possible values are 1, 16 and 64
 
 
+
+; ---------------- DEFINITION AREA ----------------------
 
 ; terminal characters
 TERM_LF:     equ $0A ; linefeed
@@ -76,9 +82,12 @@ MON_INPUT_BUFFER_SIZE: equ $100 ; 256 bytes
 MON_EXPR_WORDSTOR:     equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage for expression parser
 MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expression
 
+
+
+
     org $0000
 
-; ------------- monitor jump vector -------------
+; ------------- MONITOR JUMP VECTOR -------------
 
     jp main
     jp monitorToRam
@@ -97,20 +106,23 @@ MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expres
     jp 0
     jp monitorPrompt_loop
 
-; ------------ Interrupt vector ---------
 
+
+; ------------ INTERRUPT SERVICE ROUTINE ---------
+ 
     org $0038
 
-    jp isr_38   ; interrupt vector for interrupt mode 1 
-
-; ------------- Interrupt service routines ----------
-
+; Service routine for interrupt mode 1
 isr_38:
-    
+    reti
 
+
+
+; ---------------- INIT CODE ---------------------
 
 main:
 
+if CONF_STARTUP_DELAY == 1
     ; The CPU recovers from the reset faster than the TCCR
     ;  This delay loop prevents any mishaps (like TCCR missing the first write)
     ;  After experimenting, 2^16 counts seems reasonable. 256 were too few.
@@ -120,8 +132,8 @@ _setup_loop:
     inc HL
     ld A, H
     or L
-    jp nz, _setup_loop
-    
+    jp nz, _setup_loop    
+endif
 
     ld HL, RAM_END ; init stackpointer to end of memory
     ld SP,HL
@@ -140,12 +152,12 @@ soft_reset:
 _soft_reset_loop:
     ld (HL), $00
     inc HL
-    ld A,H
+    ld A, H
     cp high RAM_END
-    jp NZ,_soft_reset_loop
-    ld A,L
+    jp nz, _soft_reset_loop
+    ld A, L
     cp low RAM_END
-    jp NZ,_soft_reset_loop
+    jp nz, _soft_reset_loop
     
     
     jp monitorStart ; jump to monitor setup
@@ -154,7 +166,7 @@ _soft_reset_loop:
     
 ;----------------------------STRING DATA-------------------------------
 
-; NOTE: Use only LF ($0A) for linefeeds to save ROM. 
+; NOTE: Use only LF ($0A) for linefeeds for saving ROM / portability. 
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
@@ -225,83 +237,171 @@ str_cls:
     
 
     
-;---------------------------CONSOLE IO---------------------------------    
+;-------------------------- CONSOLE IO --------------------------------    
 
-; prints the character stored in A. trashes B.
+; Prints the character stored in A. Trashes B.
 printChar:
 conout:
-    ld B,A
+    ld B, A
 _printChar_wait:
     in A, (IO_UART_COM) ; read in status byte of UART
     and [1 << BIT_UART_TXRDY] ; mask out all bits except the TXRDY bit
-    jp Z,_printChar_wait ; do this until UART is ready
+    jp z, _printChar_wait ; do this until UART is ready
     
     ; UART is ready to send another byte now
-    ld A,B
+    ld A, B
     out (IO_UART_DAT), A ; UART will start sending the byte now
     
     ret
     
     
     
-    
-; reads one character from the UART and stores it in A. the char is not echoed.
-;  program execution halts until char was read.
+; Reads one character from the UART and stores it in A. The char is not echoed.
+;  Blocking call. This method will wait until UART has received a byte
 readChar:
 conin:
     in A, (IO_UART_COM) ; read in status byte of UART
     and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
-    jp Z,readChar ; do this until UART has a valid byte
+    jp z, readChar ; do this until UART has a valid byte
     
-    in A,(IO_UART_DAT) ; read in data byte
+    in A, (IO_UART_DAT) ; read in data byte
     
     ret
     
-; checks whether UART holds a character that is ready to be read
-;  sets A to $ff if char is available, $00 if not.
+
+
+; Checks whether UART holds a character that is ready to be read.
+;  Sets A to $ff if char is available, $00 if not.
 hasChar:
 const:
     in A, (IO_UART_COM) ; read in status byte of UART
     and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
-    jp Z, _hasChar_no
+    jp z, _hasChar_no
     ld A, $ff
     ret
 _hasChar_no:
     xor A
     ret
     
-;------------------------------DISK IO---------------------------------
 
-; initializes the FDC to AT/EISA mode, setting data rate etc.
-;  sets A to 00 if initialized successfully or to FF in case of an error
-fdc_init:
-    ; we assume the FDC is still in reset-mode
 
-    ; bit 7 in MSR should always be 0 while bit 5 should always be 1.
-    ;  use this to detect whether FDC is actually present
-    in A, (IO_FDC_STAT) ; read master status register
-    and [1 << BIT_FDC_UNUSED] | [1 << BIT_FDC_READY]
-    cp [1 << BIT_FDC_READY]
-    jp z, _fdc_init_noerror
+; Prints all characters from (HL) to the next zero byte.
+;  Replaces all LFs ($0A) with CRLF ($0D, $0A)
+printString:
+    ld A, (HL) ; fetch byte
+    or A  ; compare with zero
+    ret Z ; if byte is zero, we are done
+    
+    cp TERM_LF ; if byte is LF, we need to go to next line
+    jp z, _printString_lf
+    
+    ; byte is neither zero not LF, so print it out
+    call printChar
+    
+    inc HL ; increment HL and loop
+    jp printString
+    
+_printString_lf:
+    call printNewLine ; use nl routine for portability
+    inc HL
+    jp printString
+    
+    
+    
+; Reads characters from the UART and stores them in the location pointed by HL.
+;  Reading continues until 255 characters have been read or a LF character is
+;  found. CR also terminates the input. The amount of bytes read is stored in the 
+;  C register. HL points to the first read byte after the call. The last byte of 
+;  the string (not included in C) is set to 0. During reading, control characters like 
+;  backspace are processed accordingly so the input resembles somewhat of a 
+;  command prompt.
+readString:
+    ld C, 1 ; count one char more than actually read to account for terminator when looking for overflow
+    push HL ; save HL on stack
+_readString_loop:
+    call readChar
+    
+    cp TERM_BS
+    jp z, _readString_backspace
+    cp TERM_DEL
+    jp z, _readString_backspace
+    cp TERM_LF
+    jp z, _readString_end ; LF means we are done
+    cp TERM_CR
+    jp z, _readString_end ; CR means the same
+    
+    call printChar ; echo the entered character
+    
+    ld (HL), A
+    
+    inc HL
+    inc C
+    jp z, _readString_end ; return if C has flown over (255 chars read)
+    
+    jp _readString_loop
 
-    ; didn't get expected pattern -> error
-    ld A, $ff
+_readString_backspace:
+    ld A, C
+    cp 1 ; important! we have one more char in c than actually read!
+    jp z, _readString_loop ; nothing to delete. get on with it.
+    
+    ; TODO: Do this with string. takes less calls and loads
+    ld A, TERM_BS
+    call printChar ; echo the BS to move cursor back one char...
+    ld A, TERM_RUBOUT
+    call printChar ; overwrite the last entered char with rubout character...
+    ld A, TERM_BS
+    call printChar ; and place cursor over the rubout char again
+    
+    dec C ; buffer minus one
+    dec HL
+    
+    jp _readString_loop ; back to loop
+    
+_readString_end:
+    dec C ; remove the additional char
+    ld (HL),0 ; insert null terminator
+    pop HL ; move HL back to start of buffer
     ret
 
-_fdc_init_noerror:
-    ; FDC present. Write to op register to initialize AT compatible mode
+    
+    
+; Prints CRLF characters
+printNewLine:
+    ld A, $0A
+    call printChar
+    ld A, $0D
+    call printChar
+    ret
+
+   
+
+; Clears the screen
+clearScreen:
+    ld HL, str_cls
+    call printString
+    ret
+
+
+
+;----------------------------- DISK IO --------------------------------
+
+; Initializes the FDC to AT/EISA mode, setting data rate etc.
+;  Sets A to $00 if initialized successfully or to $ff in case of an error.
+fdc_init:
+    ; we assume the FDC is still in reset-mode
+    ; write to op register to initialize AT compatible mode
     ld A, [1 << BIT_FDC_SOFT_RESET] ; we don't want soft reset (active low)
     out (IO_FDC_OPER), A
     
     ; initalize data rate etc.
-    
     
     xor A
     ret
 
     
 
-; moves the drive specified by B to home sector
+; Moves the drive specified by two LSbs of B to home sector. Blocking call
 fdc_home:
     call fdc_handshake_input
     ld A, $07 ; recalibrate command
@@ -318,12 +418,14 @@ fdc_home:
     
     ret    
     
+
+
 ; Handshaking procedure for writing to data reg. Waits for Request For Master bit in MSR to go high
 ;  Also checks the data direction bit and reports an error if unexpected direction is requested.
 fdc_handshake_input:
     in A, (IO_FDC_STAT)
     bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp z, fdc_handshake_input ; according to the crap datasheet, we should wait 12us when taking branch
+    jp z, fdc_handshake_input ; TODO: according to the crap datasheet, we should wait 12us when taking branch
     bit BIT_FDC_DATA_INPUT, A
     jp nz, fdc_error ; DIO = 1 -> data register expects to be read, which is the opposite of what we want to do 
     ret
@@ -333,150 +435,48 @@ fdc_error:
     call printString
     ret
 
-;----------------------------------------------------------------------  
-    
-    
-    
-    
-    
-; prints all characters from HL to the next zero byte
-printString:
-    ld A, (HL) ; fetch byte
-    or A  ; compare with zero
-    ret Z ; if byte is zero, we are done
-    
-    cp TERM_LF ; if byte is LF, we need to go to next line
-    jp Z, _printString_lf
-    
-    ; byte is neither zero not LF, so print it out
-    call printChar
-    
-    inc HL ; increment HL and loop
-    jp printString
-    
-_printString_lf:
-    call printNewLine ; use nl routine for portability
-    inc HL
-    jp printString
-    
-    
-    
-    
-; Reads characters from the UART and stores them in the location pointed by HL.
-;  Reading continues until 255 characters have been read or a LF character is
-;  found. The amount of bytes read is stored in the C register. HL points to the
-;  first read byte after the call. The last byte of the string 
-;  (not included in C) is set to 0. During reading, control characters like 
-;  backspace are processed accordingly so the input resembles somewhat of a 
-;  command prompt.
-readString:
-    ld C, 1 ; count one char more than actually read to account for terminator when looking for overflow
-    push HL ; save HL on stack
-_readString_loop:
-    call readChar
-    
-    cp TERM_BS
-    jp Z, _readString_backspace
-    cp TERM_DEL
-    jp Z, _readString_backspace
-    cp TERM_LF
-    jp Z, _readString_end ; LF means we are done
-    cp TERM_CR
-    jp Z, _readString_end ; CR means the same
-    
-    call printChar ; echo the entered character
-    
-    ld (HL), A
-    
-    inc HL
-    inc C
-    jp Z, _readString_end ; return if C has flown over (255 chars read)
-    
-    jp _readString_loop
 
-_readString_backspace:
-    ld A, C
-    cp 1 ; important! we have one more char in c than actually read!
-    jp Z, _readString_loop ; nothing to delete. get on with it.
-    
-    ; TODO: Do this with string. takes less calls and loads
-    ld A, TERM_BS
-    call printChar ; echo the BS to move cursor back one char...
-    ld A, TERM_RUBOUT
-    call printChar ; overwrite the last entered char with rubout character...
-    ld A, TERM_BS
-    call printChar ; and place cursor over the rubout char again
-    
-    dec C ; buffer minus one
-    dec HL
-    
-    jp _readString_loop ; back to loop
-    
-    
-_readString_end:
-    dec C ; remove the additional char
-    ld (HL),0 ; insert null terminator
-    pop HL ; move HL back to start of buffer
-    ret
 
-    
-    
-; prints CRLF characters
-printNewLine:
-    ld A, $0A
-    call printChar
-    ld A, $0D
-    call printChar
-    ret
 
-    
-
-    
-; clears the screen
-clearScreen:
-    ld HL, str_cls
-    call printString
-    ret
-    
-    
-    
-; parses a single decimal character in A, stores result in A. If a non-digit 
+;---------------------- PARSER & FORMATTER METHODS --------------------------  
+           
+; Parses a single decimal character in A, stores result in A. If a non-digit 
 ;  character is found, A is set to $FF.
 parseDecimal:
     cp $30
-    jp M, _parse_error ; char is < '0'
+    jp m, _parse_error ; char is < '0'
     cp $3A
-    jp P, _parse_error ; char is > '9' 
+    jp p, _parse_error ; char is > '9' 
     ; we now know the char is a digit
     sub '0' ; subtract the value of '0'
     ; hex value is now stored in A
     ret
     
-; parses a single hex character in A, stores result in A. Accepts both upper-
-;  and lowercase characters. If a non-hex character is found, A is set to $FF
+; Parses a single hex character in A, stores result in A. Accepts both upper-
+;  and lowercase characters. If a non-hex character is found, A is set to $FF.
 parseHex:
     cp $30
-    jp M, _parseHex_noDigit ; char is < '0'
+    jp m, _parseHex_noDigit ; char is < '0'
     cp $3A
-    jp P, _parseHex_noDigit ; char is > '9' 
+    jp p, _parseHex_noDigit ; char is > '9' 
     ; char is a digit
     sub '0' ; subtract the value of '0'. hex value is now stored in A
     ret
     
 _parseHex_noDigit:
     cp 'a'
-    jp M, _parseHex_noLC ; char is < 'a'
+    jp m, _parseHex_noLC ; char is < 'a'
     cp 'g'
-    jp P, _parseHex_noLC; char is > 'f'
+    jp p, _parseHex_noLC; char is > 'f'
     ; char is a lowercase hex letter
     sub 'a' - $0a ; subtract the value of 'a' and add $0a (as a means $0a)
     ret
     
 _parseHex_noLC:
     cp 'A'
-    jp M, _parse_error ; char is < 'A'
+    jp m, _parse_error ; char is < 'A'
     cp 'G'
-    jp P, _parse_error ; char is > 'F'
+    jp p, _parse_error ; char is > 'F'
     ; char is an uppercase hex letter
     sub 'A' - $0a  ; subtract the value of 'A' and add $0a (as A means $0a)
     ret
@@ -486,8 +486,9 @@ _parse_error:
     ret
     
 
-; reads two hex characters from console and stores result in A. Trashes B
-;  sets carry bit if invalid characters are read.
+
+; Reads two hex characters from console and stores result in A. Trashes B
+;  Sets carry bit if invalid characters are read.
 readHex:
     call readChar
     call parseHex
@@ -510,10 +511,47 @@ readHex:
     
     jp resetCarryReturn
 
+
+; Prints the byte stored in A in uppercase hexadecimal format.
+;  Taken from Alexis Kotlowys monitor because I'm lazy. Man, this guy really hasn't many comments to spare.
+printHex:
+    push af
+	and	$f0
+	rrca
+	rrca
+	rrca
+	rrca
+	call _printHex_1
+	pop	af
+_printHex_1:
+    and $0f
+	cp $0a
+	jp c, _printHex_2
+	sub	$09
+	or $40
+	jp	_printHex_3
+_printHex_2:	
+    or	$30
+_printHex_3:
+	call printChar
+	ret
     
     
-; parses a hex word that is pointed by HL, the amount of bytes available at HL
-;  indicated by C. parsing is finished if a non-hex character is found or if C 
+; Prints the word stored in HL, followed by a colon and space character
+printAdressToken:
+    ld A, H
+    call printHex
+    ld A, L
+    call printHex
+    ld A, MON_ADDRESS_SEPARATOR ; print colon
+    call printChar
+    ld A, TERM_SPACE ; print space
+    call printChar
+    ret
+    
+    
+; Parses a hex word that is pointed by HL, the amount of bytes available at HL
+;  indicated by C. Parsing is finished if a non-hex character is found or if C 
 ;  goes zero during parsing. The parsed word is stored in the DE register pair.
 ;  If more than 4 hex chars are found in the buffer, the first occurring chars
 ;  are ignored and only the 4 last chars will be stored in the DE register.
@@ -525,18 +563,18 @@ parseHexWord:
     ld DE, 0
     ld A, C
     or A  ; compare with zero
-    jp Z, setCarryReturn ; no bytes for parsing -> error return
+    jp z, setCarryReturn ; no bytes for parsing -> error return
     
     ld A, (HL)
     call parseHex
     cp $FF
-    jp Z, setCarryReturn ; first char not a valid hex char -> error return
+    jp z, setCarryReturn ; first char not a valid hex char -> error return
     
 _parseHexWord_loop:
     ld A, (HL)
     call parseHex
     cp $FF
-    jp Z, resetCarryReturn ; not a valid hex char -> return
+    jp z, resetCarryReturn ; not a valid hex char -> return
     
     ; we have parsed a valid hex char
     
@@ -559,7 +597,7 @@ _parseHexWord_loop:
     
     inc HL
     dec C
-    jp Z, resetCarryReturn ; no bytes remaining -> return
+    jp z, resetCarryReturn ; no bytes remaining -> return
     
     jp _parseHexWord_loop
     
@@ -577,18 +615,18 @@ parseDecWord:
     ld DE, 0
     ld A, C
     or A  ; compare with zero
-    jp Z, setCarryReturn ; no bytes for parsing -> error return
+    jp z, setCarryReturn ; no bytes for parsing -> error return
     
     ld A, (HL)
     call parseDecimal
     cp $FF
-    jp Z, setCarryReturn ; first digit not a valid digit -> error return
+    jp z, setCarryReturn ; first digit not a valid digit -> error return
     
 _parseDecWord_loop:
     ld A, (HL)
     call parseDecimal
     cp $FF
-    jp Z, resetCarryReturn ; not a valid digit -> return
+    jp z, resetCarryReturn ; not a valid digit -> return
     
     ; we have parsed a valid digit
     
@@ -616,79 +654,164 @@ _parseDecWord_loop:
     
     inc HL
     dec C
-    jp Z, resetCarryReturn ; no bytes remaining -> return
+    jp z, resetCarryReturn ; no bytes remaining -> return
     
     jp _parseDecWord_loop
+  
+
+
+; Parses a hex/dec word. If the first char in the buffer is the base ten 
+;  indicator (#), the word is parsed as decimal. Otherwise the hex parser is 
+;  used. If not a single character was read by the parser routines, the carry bit is set.
+parseNumber:
+    ld A,(HL)
+    cp MON_DECIMAL
+    jp nz, _parseNumber_hex
     
+    ; we have a decimal indicator
+    inc HL ; throw the indicator away
+    dec C
     
+    call parseDecWord
+    ret ; carry bit is still set in case of error
+   
+_parseNumber_hex:
+    call parseHexWord
+    ret  ; carry bit is still set in case of error
+    
+
+
+; Resets carry bit and returns.
 resetCarryReturn:
     scf
     ccf
     ret
     
+; Sets carry bit and returns.
 setCarryReturn:
     scf
     ret
     
     
-    
-    
-; prints the byte stored in A in hexadecimal format.
-;  taken from Alexis Kotlowys monitor because I'm lazy. Man, this guy really hasn't many comments to spare.
-printHex:
-    push af
-	and	$f0
-	rrca
-	rrca
-	rrca
-	rrca
-	call _printHex_1
-	pop	af
-_printHex_1:
-    and $0f
-	cp $0a
-	jp c, _printHex_2
-	sub	$09
-	or $40
-	jp	_printHex_3
-_printHex_2:	
-    or	$30
-_printHex_3:
-	call printChar
-	ret
-    
-    
-    
-; prints the word stored in HL, followed by a colon and space character
-printAdressToken:
-    ld A, H
-    call printHex
-    ld A, L
-    call printHex
-    ld A, MON_ADDRESS_SEPARATOR ; print colon
-    call printChar
-    ld A, TERM_SPACE ; print space
-    call printChar
-    ret
-    
-   
    
 ; increments HL and decrements C while (HL) is a whitespace character
 skipWhites:
     ld A,(HL)
     cp TERM_SPACE ; check if char is == SPACE
-    ret NZ
+    ret nz
     ;char was == SPACE -> skip char
     inc HL
     dec C
     jp skipWhites
    
    
-;---------------------------------MAIN---------------------------------     
+    
+; Parses a math expression at (HL), the amount of bytes available beeing the value of C.
+;  Parsing is terminated once a non-expression character is found or no bytes are available.
+;  After parsing, DE contains the 16 bit result of the expression, HL points to the first
+;  character after the expression and C is decremented by the amount of bytes parsed.
+;  If syntax errors are found, the carry bit is set. If parsing terminates without errors,
+;  carry bit is reset.
+expression:
+    call _expression_term
+    ret c ; syntax error    
+
+_expression_loop:
+    ld A, C ; chars remaining?
+    or A
+    jp z, _expression_end
+    ld A, (HL)
+    cp '+'
+    jp z, _expression_add
+    cp '-'
+    jp z, _expression_end
+    
+    push DE
+    inc HL
+    dec C
+    call _expression_term
+    ret c  ; syntax error
+    ld (MON_EXPR_WORDSTOR), HL ; save HL
+    pop HL
+    call subtractHLDE
+    ex DE, HL
+    ld HL, (MON_EXPR_WORDSTOR) ; restore HL
+    jp _expression_loop
+    
+_expression_add:
+    push DE
+    inc HL
+    dec C
+    call _expression_term
+    ret c ; syntax error
+    ld (MON_EXPR_WORDSTOR), HL
+    pop HL
+    add HL, DE
+    ex DE, HL
+    ld HL, (MON_EXPR_WORDSTOR)
+    jp _expression_loop
+    
+_expression_end:
+    ld (MON_EXPR_ANSWER), DE
+    jp resetCarryReturn
+    
+    
+_expression_term: 
+    ; we supported multiplication and division here once. what's the point?
+    ; just hand down to factor
+_expression_factor:
+    call skipWhites
+    ld A, (HL)
+    cp '('
+    jp z, _expression_factor_subexpression
+    cp MON_ANSWER
+    jp z, _expression_factor_answer
+    
+    call parseNumber
+    ret c ; syntax error
+    jp _expression_factor_end
+    
+_expression_factor_subexpression:
+    inc HL
+    dec C
+    call expression
+    ret c ; syntax error
+    ld A, (HL)
+    cp ')'    ; expect closing parentheses
+    jp nz, setCarryReturn ; syntax error
+    inc HL
+    dec C
+    jp _expression_factor_end
+    
+_expression_factor_answer:
+    inc HL
+    dec C
+    ld DE, (MON_EXPR_ANSWER)
+    
+_expression_factor_end:
+    call skipWhites
+    jp resetCarryReturn
+
+
+; HL = HL - DE
+subtractHLDE:
+    ld A, E ; calculate two's complement of DE
+    cpl
+    ld E, A
+    ld A, D
+    cpl
+    ld D, A
+    inc DE
+    add HL, DE
+    ret
+
+
+
+;------------------------- MAIN MONITOR LOOP --------------------------------     
    
 monitorStart:
     ; initialize TCCR and perform an IO-RESET before initializing peripherals
-    ld A, [1 << BIT_IO_RESET]; set only IO-RESET bit to one
+    ld A, [1 << BIT_TCCR_IO_RESET]; set only IO-RESET bit to one
     out (IO_TCCR),A
     nop ; keep the IO-RESET line high for at least 8 clock pulses ( = 2 NOPs)
     nop
@@ -707,7 +830,7 @@ monitorStart:
     ; registers for counter are set. now we can gate the counter
     in A,(IO_TCCR)
     and IO_TCCR_WRITE_MASK ; mask out all the bits that are not readable
-    or [1 << BIT_C2_GATE]
+    or [1 << BIT_TCCR_C2_GATE]
     out (IO_TCCR), A ; C2 is now counting
     
     ; write mode byte to UART (first command byte after reset)
@@ -734,59 +857,59 @@ monitorPrompt_loop:
     ld HL, MON_INPUT_BUFFER ; this is where we want to store the read bytes
     call readString ; read user input
     
-    ld A,C ; user entered nothing. prompt again
-    or A  ; compare with zero
-    jp Z, monitorPrompt_loop
+    ld A, C 
+    or A
+    jp Z, monitorPrompt_loop ; user entered nothing. prompt again
     
     call printNewLine ; insert a new line after user entered a command
     
     call skipWhites ; skip whitespace at beginning of command
 
     ; process user input
-    ld B,(HL) ; load fist byte entered
+    ld B, (HL) ; load fist byte entered
     inc HL ; move HL to next byte
     dec C
     
     call skipWhites
     
-    ld A,B
+    ld A, B
     
     ; determine entered command
     cp MON_COM_BOOT
-    jp Z, command_boot
+    jp z, command_boot
     
     cp MON_COM_LOAD
-    jp Z, command_load 
+    jp z, command_load 
     
     cp MON_COM_RUN
-    jp Z, command_run
+    jp z, command_run
     
     cp MON_COM_STORE
-    jp Z, command_store
+    jp z, command_store
     
     cp MON_COM_EXAMINE
-    jp Z, command_examine
+    jp z, command_examine
     
     cp MON_COM_COPY
-    jp Z, command_copy
+    jp z, command_copy
     
     cp MON_COM_HELP
-    jp Z, command_help
+    jp z, command_help
     
     cp MON_COM_PRINT
-    jp Z, command_print
+    jp z, command_print
 
     cp MON_COM_INPUT_HEX
-    jp Z, command_input_hex
+    jp z, command_input_hex
 
     cp MON_COM_OUTPUT_HEX
-    jp Z, command_output_hex
+    jp z, command_output_hex
 
     cp MON_COM_SOFTRESET
-    jp Z, soft_reset
+    jp z, soft_reset
     
     cp MON_COM_VERSION
-    jp Z, monitor_welcome
+    jp z, monitor_welcome
     
     ; no command character recognized. print error message
     ld HL, str_unknownCommand
@@ -803,32 +926,9 @@ monitor_syntaxError:
     jp monitorPrompt_loop
     
     
-; parses a hex/dec word. if the first char in the buffer is the base ten 
-; indicator (#), the word is parsed as decimal. otherwise the hex parser is 
-; used. if not a single character was read by the parser routines, this
-; routine prints a syntax error.
-parseNumber:
-    ld A,(HL)
-    cp MON_DECIMAL
-    jp NZ, _parseNumber_hex
     
-    ; we have a decimal indicator
-    inc HL ; throw the indicator away
-    dec C
-    
-    call parseDecWord
-    jp C, monitor_syntaxError ; no digits were read -> syntax error
-    
-    ret
-    
-_parseNumber_hex:
-    call parseHexWord
-    jp C, monitor_syntaxError ; no digits were read -> syntax error
-    
-    ret
-    
-    
-;--------------------Monitor command definition area----------------------
+;---------------------- MONITOR COMMANDS ---------------------
+
 ; NOTE: These are not CALL-ed! 
 ; In the end of each command, simply jump back to monitorPromt_loop
 ; The stack is always empty when the monitor jumps to these routines
@@ -846,7 +946,8 @@ command_help:
 command_run:
     ; parse expression in input buffer and store result in DE
     call expression
-    
+    jp c, monitor_syntaxError    
+
     ex DE, HL
     jp (HL) ; we are leaving the monitor here. no need to jump back to loop
 
@@ -855,6 +956,7 @@ command_run:
 ; monitor command that loads the first record on tape into memory
 command_load:
     call expression ; destination address
+    jp c, monitor_syntaxError
 
     ; first, we need to set up the PIT C0 to count the time between two zero
     ; crossings in the tape signal
@@ -863,8 +965,8 @@ command_load:
     call printString
 _command_load_waitForTape:
     in A,(IO_TCCR)
-    and [1 << BIT_TAPE_SENSE] ; mask out SENSE bit
-    jp NZ,_command_load_waitForTape ; wait until user pushes play button
+    and [1 << BIT_TCCR_TAPE_SENSE] ; mask out SENSE bit
+    jp nz,_command_load_waitForTape ; wait until user pushes play button
     
     ; user pushed play button. print loading message
     ld HL, str_loading
@@ -872,7 +974,7 @@ _command_load_waitForTape:
     
     in A,(IO_TCCR) ; set MOTOR bit in TCR
     and IO_TCCR_WRITE_MASK ; mask out all the bits that are not readable
-    or [1 << BIT_TAPE_MOTOR]
+    or [1 << BIT_TCCR_TAPE_MOTOR]
     out (IO_TCCR), A
     
     ; motor is now running, now we can start to read bits from tape
@@ -880,7 +982,7 @@ _command_load_waitForTape:
 _command_load_tapeLoop:
     ; first, read the current tape state
     in A,(IO_TCCR)
-    and [1 << BIT_TAPE_DATA_READ] ; mask out tape data bit...
+    and [1 << BIT_TCCR_TAPE_DATA_READ] ; mask out tape data bit...
     
     ; second, compare it with the previous state
     sub B
@@ -896,13 +998,14 @@ _command_load_tapeLoop:
     ;......
 
     ; turn off motor
-    in A,(IO_TCCR)
-    and IO_TCCR_WRITE_MASK & ~[1 << BIT_TAPE_MOTOR]
+    in A, (IO_TCCR)
+    and IO_TCCR_WRITE_MASK & ~[1 << BIT_TCCR_TAPE_MOTOR]
     out (IO_TCCR), A
     
     jp monitorPrompt_loop ; jump back to monitor loop
 
     
+
 ; loads the first sector from fdd 0 into memory and jumps to the loaded code
 command_boot:
 
@@ -911,27 +1014,30 @@ command_boot:
 
     jp monitorPrompt_loop
 
+
     
 ; prints contents of memory location given by parameter
 ;  (may be an address range)
 command_examine:
     call expression
+    jp c, monitor_syntaxError
     call skipWhites
     push DE
     
-    ld A,C
+    ld A, C
     or A  ; compare with zero
-    jp Z, _command_examine_print ; no more arguments -> start printing
+    jp z, _command_examine_print ; no more arguments -> start printing
 
-    ld A,(HL) ; load remaining char
+    ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
-    jp NZ, monitor_syntaxError ; remaining char is not , -> error
+    jp nz, monitor_syntaxError ; remaining char is not , -> error
     
     inc HL ; move pointer to next byte
     dec C
     call skipWhites
     
     call expression
+    jp c, monitor_syntaxError
     
 _command_examine_print:
     inc DE ; since we want the upper address to be inclusive
@@ -960,7 +1066,7 @@ _command_examine_print_loop:
     inc HL
     
     dec C
-    jp NZ, _command_examine_print_noLf
+    jp nz, _command_examine_print_noLf
     
     ; we have printed 16 chars. print a linefeed and a new address token
     call printNewLine
@@ -973,11 +1079,11 @@ _command_examine_print_noLf:
     ; is HL == DE yet? if not, jump back to loop
     ld A, H
     cp D
-    jp NZ, _command_examine_print_loop
+    jp nz, _command_examine_print_loop
     
     ld A, L
     cp E
-    jp NZ, _command_examine_print_loop
+    jp nz, _command_examine_print_loop
     
     ; HL == DE. we are finished. back to monitor
     
@@ -991,6 +1097,7 @@ _command_examine_print_noLf:
 ;  could clean up this piece of code
 command_store:
     call expression
+    jp c, monitor_syntaxError
     ex DE, HL
     
     ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
@@ -1001,11 +1108,11 @@ command_store:
 _command_store_loop:
     call readChar
     cp TERM_CR ; pressed return?
-    jp Z, monitorPrompt_loop ; yes -> we are done
-    ld B,A
+    jp z, monitorPrompt_loop ; yes -> we are done
+    ld B, A
     call parseHex
     cp $ff
-    jp Z, _command_store_loop ; char was not valid. read again
+    jp z, _command_store_loop ; char was not valid. read again
     ; char was valid hex. echo it
     push AF
     ld A, B
@@ -1023,11 +1130,11 @@ _command_store_lowerNibble_loop:
     ; read another nibble
     call readChar
     cp TERM_CR ; pressed return?
-    jp Z, monitorPrompt_loop ; yepp -> we are done
-    ld B,A
+    jp z, monitorPrompt_loop ; yepp -> we are done
+    ld B, A
     call parseHex
     cp $ff
-    jp Z, _command_store_lowerNibble_loop ; char was not valid. read again
+    jp z, _command_store_lowerNibble_loop ; char was not valid. read again
     ; char was valid hex. echo it
     push AF
     ld A, B
@@ -1044,11 +1151,11 @@ _command_store_lowerNibble_loop:
     call printChar
     
     dec C
-    jp NZ, _command_store_noLf
+    jp nz, _command_store_noLf
     
     ; we have printed 16 chars. print a linefeed and a new address token
     call printNewLine
-    ld C,16
+    ld C, 16
     
     ; print address token
     call printAdressToken
@@ -1059,28 +1166,31 @@ _command_store_noLf:
     
 command_copy:
     call expression ; parse source address
+    jp c, monitor_syntaxError
     call skipWhites
     push DE
     
-    ld A,(HL) ; load remaining char
+    ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
-    jp NZ, monitor_syntaxError ; remaining char is not , -> error
+    jp nz, monitor_syntaxError ; remaining char is not , -> error
     inc HL
     dec C
     call skipWhites
     
     call expression ; parse destination address
+    jp c, monitor_syntaxError
     call skipWhites
     push DE
     
-    ld A,(HL) ; load remaining char
+    ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
-    jp NZ, monitor_syntaxError ; remaining char is not , -> error
+    jp nz, monitor_syntaxError ; remaining char is not , -> error
     inc HL
     dec C
     call skipWhites
     
     call expression ; parse byte count
+    jp c, monitor_syntaxError
     ld B, D ; store count in byte counter
     ld C, E
     pop DE
@@ -1208,10 +1318,11 @@ command_output_hex:
 
     ld HL, str_notImplemented
     call printString
-
+    
     jp monitorPrompt_loop ; not implemented!!!
 
     call expression
+    jp c, monitor_syntaxError
     call skipWhites
     push DE
     
@@ -1221,13 +1332,14 @@ command_output_hex:
 
     ld A,(HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
-    jp NZ, monitor_syntaxError ; remaining char is not , -> error
+    jp nz, monitor_syntaxError ; remaining char is not , -> error
     
     inc HL ; move pointer to next byte
     dec C
     call skipWhites
     
     call expression
+    jp c, monitor_syntaxError
 
     inc DE ; since we want the upper address to be inclusive
     
@@ -1243,120 +1355,34 @@ command_print:
 
 _command_print_loop:
     call expression
-    ld A,D
+    jp c, monitor_syntaxError
+
+    ld A, D
     call printHex
-    ld A,E
+    ld A, E
     call printHex
     call printNewLine
     
     call skipWhites
-    ld A,C ; chars remaining?
+    ld A, C ; chars remaining?
     or A
-    jp NZ,_command_print_loop
+    jp nz, _command_print_loop
     
     jp monitorPrompt_loop
 
+    
+; --------------------- MISC ROUTINES ----------------------
 
-
-
-; HL = HL - DE
-subtract:
-    ld A,E ; calculate two's complement of DE
-    cpl
-    ld E,A
-    ld A,D
-    cpl
-    ld D,A
-    inc DE
-    add HL,DE
-    ret
-    
-    
-    
-    
-    
-expression:
-    call term
-    
-_expression_loop:
-    ld A,C ; chars remaining?
-    or A
-    jp Z, _expression_end
-    ld A,(HL)
-    cp '+'
-    jp Z,_expression_add
-    cp '-'
-    jp NZ, _expression_end
-    
-    push DE
-    inc HL
-    dec C
-    call term
-    ld (MON_EXPR_WORDSTOR), HL ; save HL
-    pop HL
-    call subtract
-    ex DE,HL
-    ld HL,(MON_EXPR_WORDSTOR) ; restore HL
-    jp _expression_loop
-    
-_expression_add:
-    push DE
-    inc HL
-    dec C
-    call term
-    ld (MON_EXPR_WORDSTOR), HL
-    pop HL
-    add HL,DE
-    ex DE,HL
-    ld HL,(MON_EXPR_WORDSTOR)
-    jp _expression_loop
-    
-_expression_end:
-    ld (MON_EXPR_ANSWER),DE
-    ret
-    
-    
-term: ; we supported multiplication and division here once. what's the point?
-factor:
-    call skipWhites
-    ld A,(HL)
-    cp '('
-    jp Z, _factor_expression
-    cp MON_ANSWER
-    jp Z, _factor_answer
-    
-    call parseNumber
-    jp _factor_end
-    
-_factor_expression:
-    inc HL
-    dec C
-    call expression
-    ld A,(HL)
-    cp ')'
-    jp NZ,monitor_syntaxError
-    inc HL
-    dec C
-    jp _factor_end
-    
-_factor_answer:
-    inc HL
-    dec C
-    ld DE,(MON_EXPR_ANSWER)
-    
-_factor_end:
-    call skipWhites
-    ret
-
-    
-    
-        
-shovelknight_size:    equ shovelknight_rom_end - shovelknight_rom
-shovelknight_ram:     equ MON_EXPR_ANSWER
-shovelknight_ram_end: equ shovelknight_ram + shovelknight_size
-        
+; Copies Minimon ROM into RAM and disables ROM mapping. 
+;  Control is given back to monitor prompt after copying has finished.
+;  This routine disables interrupts prior to copying, since there is a short
+;  period during copying in which there is no valid code in the interrupt vectors.
+;  Interrupts are NOT re-enabled automatically.
 monitorToRam:
+    di ; make sure copying is never interrupted
+
     ; load shovelknight into memory
+    ;  ugh... yes, i called it shovelknight cause it shovels around the monitor code. get off my back
     ld HL, shovelknight_rom
     ld DE, shovelknight_ram
     ld BC, shovelknight_size
@@ -1364,18 +1390,21 @@ monitorToRam:
     
     ; give control to shovelknight
     jp shovelknight_ram
-    
+
+shovelknight_ram:     equ MON_INPUT_BUFFER    ; where to store monitor ROM before disabling ROM mapping
+shovelknight_size:    equ shovelknight_rom_end - shovelknight_rom                   
+shovelknight_ram_end: equ shovelknight_ram + shovelknight_size    
     
 shovelknight_rom:
 
     ld HL, $0000 ; copy monitor into HIMEM
-    ld DE, shovelknight_ram_end
+    ld DE, monitor_end
     ld BC, ROM_END
     ldir
     
-    in A,(IO_TCCR) ; disable rom mapping
+    in A, (IO_TCCR) ; disable rom mapping
     and IO_TCCR_WRITE_MASK
-    or [1 << BIT_ROM_GATE]
+    or [1 << BIT_TCCR_ROM_GATE]
     out (IO_TCCR),A 
     
     ld HL, shovelknight_ram_end ; copy monitor back into LOMEM
@@ -1386,6 +1415,7 @@ shovelknight_rom:
     jp monitorPrompt_loop ; shovelknight is done
 
 shovelknight_rom_end:
+
 monitor_end:
     
     ; pad out file for maximum rom size
@@ -1396,13 +1426,7 @@ monitor_end:
     
     
     
-    
-    
-    
-    
-    
-    
-    
+
     
     
     

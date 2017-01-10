@@ -50,17 +50,17 @@ IO_PIT_CTRL: equ $13 ; PIT Control Register (write only)
 ;-------------Tape Counter Control Register-------------
 IO_TCCR:             equ $20
 
-BIT_ROM_GATE:        equ 0
-BIT_IO_RESET:        equ 1 ; write only
-BIT_TAPE_SENSE:      equ 1 ; read only
-BIT_C0_GATE:         equ 2
-BIT_C1_GATE:         equ 3
-BIT_C2_GATE:         equ 4
-BIT_C1_INT_ENABLE:   equ 5
-BIT_TAPE_MOTOR:      equ 6 ; write only
-BIT_C0_OUT:          equ 6 ; read only
-BIT_TAPE_DATA_WRITE: equ 7 ; write only
-BIT_TAPE_DATA_READ:  equ 7 ; read only
+BIT_TCCR_ROM_GATE:        equ 0
+BIT_TCCR_IO_RESET:        equ 1 ; write only
+BIT_TCCR_TAPE_SENSE:      equ 1 ; read only
+BIT_TCCR_C0_GATE:         equ 2
+BIT_TCCR_C1_GATE:         equ 3
+BIT_TCCR_C2_GATE:         equ 4
+BIT_TCCR_C1_INT_ENABLE:   equ 5
+BIT_TCCR_TAPE_MOTOR:      equ 6 ; write only
+BIT_TCCR_C0_OUT:          equ 6 ; read only
+BIT_TCCR_TAPE_DATA_WRITE: equ 7 ; write only
+BIT_TCCR_TAPE_DATA_READ:  equ 7 ; read only
 ; 0 in this mask means the respective bit is not the same meaning when reading 
 ;  from than when writing to TCCR
 IO_TCCR_WRITE_MASK:  equ $3D
