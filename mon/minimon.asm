@@ -21,7 +21,7 @@ z80
 
 ;-------------- PRE-ASSEMBLY CONFIGURATION -------------------
 
-; general configuration 
+; General configuration 
 CONF_INCLUDE_HELP:     equ 1    ; set to zero to save a few bytes of ROM
 CONF_RESET_ON_STARTUP: equ 0    ; will clear memory on startup if set to one
 CONF_STARTUP_DELAY:    equ 1    ; will delay approx. 1 sec on startup
@@ -30,7 +30,8 @@ CONF_STARTUP_DELAY:    equ 1    ; will delay approx. 1 sec on startup
 CONF_UART_BAUDRATE: equ 9600
 CONF_UART_PRESCALE: equ 1      ; possible values are 1, 16 and 64
 
-
+; Command configuration
+CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
 
 ; ---------------- DEFINITION AREA ----------------------
 
@@ -519,29 +520,29 @@ readHex:
 ;  Taken from Alexis Kotlowys monitor because I'm lazy. Man, this guy really hasn't many comments to spare.
 printHex:
     push af
-	and	$f0
-	rrca
-	rrca
-	rrca
-	rrca
-	call _printHex_1
-	pop	af
+    and $f0
+    rrca
+    rrca
+    rrca
+    rrca
+    call _printHex_1
+    pop af
 _printHex_1:
     and $0f
-	cp $0a
-	jp c, _printHex_2
-	sub	$09
-	or $40
-	jp	_printHex_3
-_printHex_2:	
-    or	$30
+    cp $0a
+    jp c, _printHex_2
+    sub $09
+    or $40
+    jp _printHex_3
+_printHex_2:
+    or $30
 _printHex_3:
-	call printChar
-	ret
+    call printChar
+    ret
     
     
 ; Prints the word stored in HL, followed by a colon and space character
-printAdressToken:
+printAddressToken:
     ld A, H
     call printHex
     ld A, L
@@ -706,8 +707,8 @@ skipWhites:
     inc HL
     dec C
     jp skipWhites
-   
-   
+    
+    
     
 ; Parses a math expression at (HL), the amount of bytes available beeing the value of C.
 ;  Parsing is terminated once a non-expression character is found or no bytes are available.
@@ -1050,17 +1051,28 @@ _command_examine_print:
     pop HL
     ; start address is now stored in HL, end address in DE
     
-    ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
+    ld C, CONF_COMM_EXAMINE_BYTES_PER_LINE + 1 ; counter for bytes on line (to insert LF after 16 bytes)
 
     ; print starting address token
-    call printAdressToken
+    call printAddressToken
     
-_command_examine_print_loop:
+_command_examine_loop:
+    ; reached end address yet?
+    ld A, H
+    cp D
+    jp nz, _command_examine_cont1
+    ld A, L
+    cp E
+    jp z, _command_examine_end
+_command_examine_cont1:
+    dec C
+    jp z, _command_examine_lf
+_command_examine_cont2:
 
     ; check if user terminated printing
     call hasChar
     or A
-    jp nz, monitorPrompt_loop
+    jp nz, _command_examine_end
 
     ld A, (HL)
     call printHex
@@ -1070,28 +1082,17 @@ _command_examine_print_loop:
     
     inc HL
     
-    dec C
-    jp nz, _command_examine_print_noLf
+    jp _command_examine_loop
     
+_command_examine_lf:
     ; we have printed 16 chars. print a linefeed and a new address token
     call printNewLine
-    ld C,16
+    call printAddressToken
+    ld C, CONF_COMM_EXAMINE_BYTES_PER_LINE + 1
+    jp _command_examine_loop
     
-    call printAdressToken
-    
-_command_examine_print_noLf:
+_command_examine_end:
 
-    ; is HL == DE yet? if not, jump back to loop
-    ld A, H
-    cp D
-    jp nz, _command_examine_print_loop
-    
-    ld A, L
-    cp E
-    jp nz, _command_examine_print_loop
-    
-    ; HL == DE. we are finished. back to monitor
-    
     jp monitorPrompt_loop
 
     
@@ -1108,7 +1109,7 @@ command_store:
     ld C, 16 ; counter for bytes on line (to insert LF after 16 bytes)
 
     ; print starting address token
-    call printAdressToken
+    call printAddressToken
     
 _command_store_loop:
     call readChar
@@ -1163,11 +1164,12 @@ _command_store_lowerNibble_loop:
     ld C, 16
     
     ; print address token
-    call printAdressToken
+    call printAddressToken
     
 _command_store_noLf:
     jp _command_store_loop
 
+    
     
 ; Copies block of memory
 command_copy:
@@ -1432,9 +1434,11 @@ _ohex_data_end:
     ; restore end address and check if anything left to print
     pop DE
     ld A, D
+    inc A   ; we want end address to be inclusive
     cp H
     jp nz, _ohex_data
     ld A, E
+    inc A
     cp L
     jp nz, _ohex_data
 
@@ -1495,7 +1499,7 @@ shovelknight_ram_end: equ shovelknight_ram + shovelknight_size
 shovelknight_rom:
 
     ld HL, $0000 ; copy monitor into HIMEM
-    ld DE, monitor_end
+    ld DE, shovelknight_ram_end
     ld BC, ROM_END
     ldir
     
@@ -1520,11 +1524,7 @@ monitor_end:
 
     end main
 
-    
-    
-    
+
 
     
     
-    
-     
