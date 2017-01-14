@@ -11,7 +11,6 @@
 ;       all wrongs reversed
 ;-----------------------------------
 
-z80
 
     org $0000
 
@@ -1055,6 +1054,14 @@ _command_examine_print:
 
     ; print starting address token
     call printAddressToken
+
+    ; if end address was ffff (is now 0) we need to skip the first loop check
+    ld A, D
+    or A
+    jp nz, _command_examine_loop
+    ld A, E
+    or A
+    jp z, _command_examine_cont1
     
 _command_examine_loop:
     ; reached end address yet?
@@ -1275,15 +1282,11 @@ _hex_data_loop:
 
 
 _hex_data_done:
-    ; checksum
+    ; read checksum and add D to it
     call readHex
     jp c, _hex_error
-    ld B, A   ; save checksum in B (we need A to negate D)
-    
-    xor A
-    sub D
-    cp B
-    jp nz, _hex_checksum_error  ; checksum did not match
+    add D   ; if record/checksum is okay, this must yield zero
+    jp nz, _hex_checksum_error  
 
     ; expect CR or LF line terminator
     call readChar
@@ -1328,11 +1331,11 @@ command_output_hex:
     call skipWhites
     push DE
     
-    ld A,C
+    ld A, C
     or A  ; compare with zero
-    jp z, monitor_syntaxError ; no more arguments -> error. we need a range here
+    jp z, _ohex_go ; no more arguments. just print this one byte
 
-    ld A,(HL) ; load remaining char
+    ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
     jp nz, monitor_syntaxError ; remaining char is not , -> error
     
@@ -1342,6 +1345,9 @@ command_output_hex:
     
     call expression
     jp c, monitor_syntaxError
+
+_ohex_go:
+    inc DE  ; to make end address inclusive
     
     pop HL
 
@@ -1354,8 +1360,7 @@ command_output_hex:
     jp nz, _ohex_data
     ld A, E
     cp L
-    jp nz, _ohex_data
-    jp _ohex_eof
+    jp z, _ohex_eof
 
 _ohex_data:
     ld C, $00  ; initialize C for checksum
@@ -1376,16 +1381,16 @@ _ohex_data:
     jp nz, _ohex_count_cap
     ; D is 0 and E is less than $10 -> print E
     ld A, E
-    call printHex
     jp _ohex_count_end
 _ohex_count_cap:
     ; count was greater or equal 16. cap DE and print $10
     ld DE, $0010
     ld A, $10
-    call printHex
 _ohex_count_end:
+    call printHex
     ; HL is now the starting address, DE the capped byte count. End address still on stack
-    add C ; add count to checksum
+    ld A, E ; add count to checksum
+    add C
     ld C, A
 
     ; address
@@ -1401,7 +1406,7 @@ _ohex_count_end:
     ld C, A
 
     ; record type ( no need to add to checksum since it's 0)
-    ld A, $00
+    xor A
     call printHex
 
 _ohex_data_loop:
@@ -1416,7 +1421,8 @@ _ohex_data_loop:
 
     ld A, (HL)
     call printHex
-    add C    ; add to checksum
+    ld A, (HL) ; add to checksum
+    add C
     ld C, A
 
     inc HL
@@ -1434,11 +1440,9 @@ _ohex_data_end:
     ; restore end address and check if anything left to print
     pop DE
     ld A, D
-    inc A   ; we want end address to be inclusive
     cp H
     jp nz, _ohex_data
     ld A, E
-    inc A
     cp L
     jp nz, _ohex_data
 
@@ -1500,7 +1504,7 @@ shovelknight_rom:
 
     ld HL, $0000 ; copy monitor into HIMEM
     ld DE, shovelknight_ram_end
-    ld BC, ROM_END
+    ld BC, monitor_end
     ldir
     
     in A, (IO_TCCR) ; disable rom mapping
@@ -1510,7 +1514,7 @@ shovelknight_rom:
     
     ld HL, shovelknight_ram_end ; copy monitor back into LOMEM
     ld DE, $0000
-    ld BC, ROM_END
+    ld BC, monitor_end
     ldir
     
     jp monitorPrompt_loop ; shovelknight is done
