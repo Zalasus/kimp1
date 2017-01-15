@@ -114,6 +114,7 @@ MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expres
 
 ; Service routine for interrupt mode 1
 isr_38:
+    ini
     reti
 
 
@@ -439,6 +440,15 @@ fdc_error:
     ret
 
 
+
+; >>>>>>
+;    ld HL, wheretostoreit
+;    ld C, IO_FDC_DATA
+;_fdc_waitfordata:
+;    ei
+;    hlt
+;    jp _fdc_waitfordata
+    
 
 
 ;---------------------- PARSER & FORMATTER METHODS --------------------------  
@@ -1415,10 +1425,6 @@ _ohex_data_loop:
     or A
     jp z, _ohex_data_end
 
-    call hasChar  ; allow user to abort printing
-    or A
-    jp nz, monitorPrompt_loop
-
     ld A, (HL)
     call printHex
     ld A, (HL) ; add to checksum
@@ -1436,6 +1442,10 @@ _ohex_data_end:
     sub C
     call printHex
     call printNewLine
+
+    call hasChar  ; allow user to abort printing
+    or A
+    jp nz, monitorPrompt_loop
 
     ; restore end address and check if anything left to print
     pop DE
