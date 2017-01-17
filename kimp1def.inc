@@ -89,9 +89,12 @@ BIT_FDC_FDD1_BUSY:          equ 1
 BIT_FDC_FDD2_BUSY:          equ 2
 BIT_FDC_FDD3_BUSY:          equ 3
 BIT_FDC_BUSY:               equ 4
-BIT_FDC_EXCEC_MODE:         equ 5
+BIT_FDC_EXEC_MODE:          equ 5
 BIT_FDC_DATA_INPUT:         equ 6
 BIT_FDC_REQUEST_FOR_MASTER: equ 7
+
+; master status register 1
+BIT_FDC_POWERDOWN:         equ 0
 
 ; operation register bits
 BIT_FDC_DRIVE_SELECT:      equ 0
@@ -146,6 +149,7 @@ BIT_FDC_UNUSED:                 equ 7
 
 ;---------------Interrupt Vector Registers--------------
 IO_IVR_FDC:   equ $3C
+IO_IVR_RTC:   equ $5C
 
 
 
@@ -157,7 +161,7 @@ IO_RTC_S10:      equ $41
 IO_RTC_MI1:      equ $42
 IO_RTC_MI10:     equ $43
 IO_RTC_H1:       equ $44
-IO_RTC_H10:      equ $45 ; NOTE: Bits 0-1: hour, Bit 2: PM/AM, Bit 3: Unused
+IO_RTC_H10:      equ $45 ; NOTE: Bits 0-1: hour, Bit 2: PM/AM, Bit 3: 0
 IO_RTC_D1:       equ $46
 IO_RTC_D10:      equ $47
 IO_RTC_MO1:      equ $48
@@ -170,24 +174,24 @@ IO_RTC_CE:       equ $4E
 IO_RTC_CF:       equ $4F
 
 ; H10 bits
-BIT_RTC_PM_AM:      equ 2 ; 0=AM, 1=PM
+BIT_RTC_PM_AM:      equ 2 ; 0=AM,  1=PM
 
 ; CD bits
 BIT_RTC_HOLD:       equ 0
 BIT_RTC_BUSY:       equ 1 ; read-only
-BIT_RTC_IRQ_FLAG:   equ 2
+BIT_RTC_IRQ_FLAG:   equ 2 ; write 0 to reset, write 1 to leave unaffected
 BIT_RTC_30_SEC_ADJ: equ 3
 
 ; CE bits
 BIT_RTC_MASK:       equ 0
-BIT_RTC_ITRPT_STND: equ 1
+BIT_RTC_ITRPT_STND: equ 1 ; 0=7.8125ms pulse,  1=as long as irq is set
 BIT_RTC_T0:         equ 2
 BIT_RTC_T1:         equ 3
 
 ; CF bits
 BIT_RTC_REST:       equ 0
 BIT_RTC_STOP:       equ 1
-BIT_RTC_24_12:      equ 2
+BIT_RTC_24_12:      equ 2 ; 0=12h-mode,  1=24h-mode
 BIT_RTC_TEST:       equ 3
 
 

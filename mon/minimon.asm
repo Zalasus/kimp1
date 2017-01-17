@@ -44,7 +44,8 @@ TERM_SPACE:  equ $20 ; space
 TERM_RUBOUT: equ $20 ; whatever character is not visible (space, del or whatever)
 
 ; monitor command characters
-MON_COM_RUN:        equ 'r'
+MON_COM_RUN:        equ 'x'
+MON_COM_RUN_JUMP:   equ '!'
 MON_COM_LOAD:       equ 'l'
 MON_COM_BOOT:       equ 'b'
 MON_COM_VERSION:    equ 'v'
@@ -55,7 +56,7 @@ MON_COM_COPY:       equ 'c'
 MON_COM_INPUT_HEX:  equ 'i'
 MON_COM_OUTPUT_HEX: equ 'o'
 MON_COM_PRINT:      equ 'p'
-MON_COM_SOFTRESET:  equ 'x'
+MON_COM_SOFTRESET:  equ 'r'
 
 ; Other monitor characters
 MON_PROMPT:             equ '>'
@@ -108,14 +109,32 @@ MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expres
 
 
 
-; ------------ INTERRUPT SERVICE ROUTINE ---------
- 
+; ---------- INTERRUPT SERVICE ROUTINE TABLE -------
+
     org $0038
 
-; Service routine for interrupt mode 1
-isr_38:
-    ini
-    reti
+    ; catch restart for interrupt mode 1
+    jp isr_catch   
+
+
+    org $0040
+
+; list addresses of routines here using dw
+isrtable:
+isrtable_fdc:
+    dw fdc_isr
+isrtable_rtc:
+    dw rtc_isr
+isrtable_catch:
+    dw isr_catch
+
+
+
+; Catches any unhandled interrupts.
+;  Do not re-enable interrupts here! If we end up here, something definitely went wrong
+;  and some device is still holding the /IRQ line low.
+isr_catch:
+    ret
 
 
 
@@ -138,6 +157,16 @@ endif
 
     ld HL, RAM_END ; init stackpointer to end of memory
     ld SP,HL
+
+    ; init interrupt handlers
+    im 2
+    ld A, high isrtable
+    ld I, A
+    ; since the IVRs have no reset, we need to initialize them to some known
+    ;  state, in this case the catch routine
+    ld A, low isrtable_catch
+    out (IO_IVR_FDC), A
+    out (IO_IVR_RTC), A
 
 if CONF_RESET_ON_STARTUP == 0
     jp monitorStart ; skip soft reset and jump to monitor setup
@@ -219,7 +248,7 @@ else
     db 'Defined commands:', $0A
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
-    db 'r X        Execute program at X', $0A
+    db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
     db 'c S, D, C  Copy C bytes from S to D', $0A
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A
@@ -228,7 +257,7 @@ else
     db 'p X        Parses and prints X', $0A
     db 'i          Starts reading of Intel HEX', $0A
     db 'o S [,E]   Dumps S to E as Intel HEX', $0A
-    db 'x          Soft reset', $0A
+    db 'r          Soft reset', $0A
     db 'Arguments in square brackets optional', $0A
     db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
     db '$ is the last parsed number', $0A
@@ -390,50 +419,84 @@ clearScreen:
 
 ;----------------------------- DISK IO --------------------------------
 
-; Initializes the FDC to AT/EISA mode, setting data rate etc.
-;  Sets A to $00 if initialized successfully or to $ff in case of an error.
+; Initializes the FDC to Special mode, setting data rate etc.
 fdc_init:
+    ; initialize interrupt vector for fdc
+    ld A, low isrtable_fdc
+    out (IO_IVR_FDC), A
+    
     ; we assume the FDC is still in reset-mode
-    ; write to op register to initialize AT compatible mode
-    ld A, [1 << BIT_FDC_SOFT_RESET] ; we don't want soft reset (active low)
+    ; set Mode Select bit in operation register for Special mode. Reset DMA bit for interrupt mode
+    ld A, [1 << BIT_FDC_MODE_SELECT]
     out (IO_FDC_OPER), A
+    ; according to the crap datasheet we must read the control register now
+    in A, (IO_FDC_CONT)   ; the CR is write-only, so this should just return crap
+    ; we are now in Special mode
     
-    ; initalize data rate etc.
+    ; initalize data rate
+    ; 500K MFM @ 32MHz~ let's not go to fast. I'm easily scared by data rates
+    ld A, [1 << BIT_FDC_DATARATE0] 
+    out (IO_FDC_CONT), A
     
-    xor A
     ret
 
     
 
 ; Moves the drive specified by two LSbs of B to home sector. Blocking call
 fdc_home:
-    call fdc_handshake_input
+    call fdc_emptyDataBuffer  ; make sure FDC accepts commands
     ld A, $07 ; recalibrate command
     out (IO_FDC_DATA), A
+
+    call fdc_waitForRFM
+    jp c, fdc_error  ; direction must now be input~ reclibrate requires 2 bytes
     ld A, B
     and $03 ; we only need the two lower bits for the drive number
     out (IO_FDC_DATA), A
     
-    ; the FDC is stepping the drive now. we need to wait until it is finished
-    ;  stepping and has reached a home sector
-    
-    ; TODO: read status register 0 to A here
-    
+    ; the FDC is stepping the drive now. we need to wait until stepping is finished
+    ;  and has head has reached a home sector.
+    ei
+    hlt
+
+    ; stepping is finished.
+    ; next, read SR0 to check if drive has successfully reached track 0
     
     ret    
-    
 
+        
 
-; Handshaking procedure for writing to data reg. Waits for Request For Master bit in MSR to go high
-;  Also checks the data direction bit and reports an error if unexpected direction is requested.
-fdc_handshake_input:
+; Waits until the FDC reports a Request For Master. After that, it checks the data direction
+;  bit. If it is is set to "waiting for input" the carry flag is reset, if bit is set to "data available"
+;  carry bit is set.
+fdc_waitForRFM:
     in A, (IO_FDC_STAT)
     bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp z, fdc_handshake_input ; TODO: according to the crap datasheet, we should wait 12us when taking branch
-    bit BIT_FDC_DATA_INPUT, A
-    jp nz, fdc_error ; DIO = 1 -> data register expects to be read, which is the opposite of what we want to do 
-    ret
+    jp z, fdc_waitForRFM
 
+    bit BIT_FDC_DATA_INPUT, A
+    jp nz, resetCarryReturn ; DIO = 1 -> data register expects to be read
+    jp setCarryReturn
+
+
+
+; Reads and discards bytes from the FDC data register until Request For Master is set and
+;  direction bit reports "waiting for input". Can also be used to archive initial condition
+;  when issuing commands to the FDC
+fdc_emptyDataBuffer:
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
+    jp z, fdc_emptyDataBuffer
+
+    bit BIT_FDC_DATA_INPUT, A
+    ret z ; DIO = 0 -> data register expects input. we are done
+    
+    in A, (IO_FDC_DATA)
+    jp fdc_emptyDataBuffer
+
+
+
+; Prints FDC error message and returns
 fdc_error:
     ld HL, str_fdcError
     call printString
@@ -441,14 +504,160 @@ fdc_error:
 
 
 
-; >>>>>>
-;    ld HL, wheretostoreit
-;    ld C, IO_FDC_DATA
-;_fdc_waitfordata:
-;    ei
-;    hlt
-;    jp _fdc_waitfordata
+; Prints Floppy Disk Error messag and returns
+fdc_diskError:
+    ld HL, str_diskError
+    call printString
+    ret
+
+
+
+; Interrupt handler for floppy controller
+fdc_isr:
+    exx
+    ex af, af'
+    ; interrupt from the fdc. check what to do:
+    ;  if we're still in exec mode, a data byte is available or expected.
+    ;  if not, exec mode has ended and the interrupt indicates a
+    ;  command has finished executing.
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp z, _fdc_isr_commandFinished
     
+    ; a data byte is available or expected
+    call fdc_waitForRFM  ; RFM should already be set by now, but better be safe than sorry
+    jp c, _fdc_isr_dataToFDC
+
+    ; FDC has a byte to be stored in memory
+    in A, (IO_FDC_DATA)
+    ld (HL), A
+    inc HL
+    jp _fdc_isr_end
+
+_fdc_isr_dataToFDC:
+    ; FDC expects a data byte
+    ld A, (HL)
+    out (IO_FDC_DATA), A
+    inc HL
+    jp _fdc_isr_end
+
+_fdc_isr_commandFinished:
+
+_fdc_isr_end:
+    exx
+    ex af, af'
+    ei
+    ret
+
+
+
+; Waits for approximately 15us
+;  (recommended but not required beforeore reading MSR in command phase~
+;   we use polling instead. might remove routine if no other useful application is found)
+fdc_delay:
+    ld A, (CPU_SPEED/67000)/14  ; 1/15us = 67kHz, delay loop is 14 cycles long
+
+_fdc_delay_loop:
+    dec A
+    jp nz, _fdc_delay_loop
+
+    ret
+
+
+
+;---------------------------- RTC ACCESS ------------------------------------    
+
+; Initializes the RTC, including the IVR etc.
+rtc_init:
+    ld A, low isrtable_rtc
+    out (IO_IVR_RTC), A
+    ret
+    
+
+; A test routine to print the current time to console. No LF is appended so CR can be used
+rtc_printTime:
+    in A, (IO_RTC_H10)
+    and $03  ; mask out AM/PM bit
+    add '0'
+    call printChar
+    
+    in A, (IO_RTC_H1)
+    and $0f ; 4-bit-device!!
+    add '0'
+    call printChar
+    
+    ld A, ':'
+    call printChar
+    
+    in A, (IO_RTC_MI10)
+    and $0f
+    add '0'
+    call printChar
+
+    in A, (IO_RTC_MI1)
+    and $0f
+    add '0'
+    call printChar    
+    
+    ld A, ':'
+    call printChar
+    
+    in A, (IO_RTC_S10)
+    and $0f
+    add '0'
+    call printChar
+
+    in A, (IO_RTC_S1)
+    and $0f
+    add '0'
+    call printChar
+
+    ld A, TERM_SPACE
+    call printChar
+
+    ; if 24 Hour bit is not set, print AM/PM-Indicator. Print two rubouts otherwise
+    in A, (IO_RTC_CF)
+    bit BIT_RTC_24_12, A
+    jp z, _rtc_printTime_ampm
+
+    ld A, TERM_RUBOUT
+    call printChar
+    ld A, TERM_RUBOUT
+    call printChar
+    jp _rtc_printTime_done
+
+_rtc_printTime_ampm:
+    in A, (IO_RTC_H10)
+    bit BIT_RTC_PM_AM, A
+    jp z, _rtc_printTime_am
+    ld A, 'P'
+    jp _rtc_printTime_ampm_done
+_rtc_printTime_am:
+    ld A, 'A'
+_rtc_printTime_ampm_done:
+    call printChar
+    ld A, 'M'
+    call printChar
+
+_rtc_printTime_done:
+    ret
+
+
+
+; Interrupt handler for the timed interval interrupt by the RTC
+rtc_isr:
+    exx
+    ex af,af'
+
+    ; clear the irq flag
+    in A, (IO_RTC_CD)
+    and ~[1 << BIT_RTC_IRQ_FLAG]
+    out (IO_RTC_CD), A
+    
+    exx
+    ex af, af'
+    ei
+    ret
 
 
 ;---------------------- PARSER & FORMATTER METHODS --------------------------  
@@ -959,13 +1168,23 @@ command_help:
 
 ; Monitor command to jump to given location
 command_run:
+    ; check for ! token to see if user wants to jump instead of call
+    ld A, (HL)
+    cp MON_COM_RUN_JUMP
+    jp z, _command_run_nocall
+    ; there's no indirect call, so we put the return address on the stack ourself.
+    ;  let called code return back to monitor loop (let's just hope the program doesn't ruin anything)
+    ld DE, monitorPrompt_loop
+    push DE
+_command_run_nocall:
+    
     ; parse expression in input buffer and store result in DE
     call expression
-    jp c, monitor_syntaxError    
+    jp c, monitor_syntaxError
 
     ex DE, HL
-    jp (HL) ; we are leaving the monitor here. no need to jump back to loop
-
+    jp (HL)
+    
     
     
 ; Loads the first record on tape into memory at given address
