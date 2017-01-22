@@ -22,11 +22,11 @@ IO_UART_COM: equ $01 ; UART Command/Mode register
 
 ; command register bits
 BIT_UART_TXEN:        equ 0 
-BIT_UART_DTR:         equ 1
+BIT_UART_DTR:         equ 1 ; 1=pin low, tied to status LED (1=led off)
 BIT_UART_RXEN:        equ 2
 BIT_UART_SEND_BREAK:  equ 3
 BIT_UART_RESET_ERROR: equ 4
-BIT_UART_RST:         equ 5 ; Request To Send, not Reset
+BIT_UART_RTS:         equ 5 ; 1=output low
 BIT_UART_INT_RESET:   equ 6
 BIT_UART_HUNT_MODE:   equ 7 ; unused in async mode
 
@@ -38,7 +38,7 @@ BIT_UART_PARITY_ERR:  equ 3
 BIT_UART_OVERRUN_ERR: equ 4
 BIT_UART_FRAMING_ERR: equ 5
 BIT_UART_SYNDET:      equ 6
-BIT_UART_DSR:         equ 7
+BIT_UART_DSR:         equ 7 ;1=pin low, tied to button (1=button pressed)
 
 
 
@@ -110,13 +110,14 @@ BIT_FDC_DATARATE1:       equ 1
 BIT_FDC_DISABLE_PRECOMP: equ 2
 
 ; status register 0 bits
-BIT_FDC_SR1_UNIT_SELECT_2: equ 0
-BIT_FDC_SR1_UNIT_SELECT_1: equ 1
+BIT_FDC_SR0_UNIT_SELECT_0: equ 0
+BIT_FDC_SR0_UNIT_SELECT_1: equ 1
 BIT_FDC_HEAD_SELECT:       equ 2
-BIT_FDC_NOT_READY:         equ 3
+BIT_FDC_NOT_READY:         equ 3 ; always 0
 BIT_FDC_EQUIPMENT_CHECK:   equ 4
 BIT_FDC_SEEK_END:          equ 5
-BIT_FDC_INTERRUPT_CODE:    equ 7
+BIT_FDC_INTERRUPT_CODE0:   equ 6
+BIT_FDC_INTERRUPT_CODE1:   equ 7
 
 ; status register 1 bits
 BIT_FDC_MISSING_ADRESS_MARK: equ 0
@@ -136,14 +137,13 @@ BIT_FDC_SR3_DATA_ERROR:                    equ 5
 BIT_FDC_CONTROL_MARK:                      equ 6
 
 ; status register 3 bits
-BIT_FDC_UNIT_SELECT_2:          equ 0
+BIT_FDC_UNIT_SELECT_0:          equ 0
 BIT_FDC_UNIT_SELECT_1:          equ 1
 BIT_FDC_HEAD_SELECT:            equ 2
-BIT_FDC_WRITE_PROTECTED:        equ 3
+BIT_FDC_WRITE_PROTECTED:        equ 3 ; active low
 BIT_FDC_TRACK_0:                equ 4
-BIT_FDC_READY:                  equ 5
-BIT_FDC_WRITE_PROTECTED_LEGACY: equ 6
-BIT_FDC_UNUSED:                 equ 7
+BIT_FDC_READY:                  equ 5 ; always 1
+BIT_FDC_WRITE_PROTECTED_LEGACY: equ 6 ; active low
 
 
 
@@ -193,6 +193,8 @@ BIT_RTC_REST:       equ 0
 BIT_RTC_STOP:       equ 1
 BIT_RTC_24_12:      equ 2 ; 0=12h-mode,  1=24h-mode
 BIT_RTC_TEST:       equ 3
+
+
 
 
 

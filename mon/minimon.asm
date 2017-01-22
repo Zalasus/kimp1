@@ -32,6 +32,8 @@ CONF_UART_PRESCALE: equ 1      ; possible values are 1, 16 and 64
 ; Command configuration
 CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
 
+
+
 ; ---------------- DEFINITION AREA ----------------------
 
 ; terminal characters
@@ -78,17 +80,23 @@ if CONF_UART_PRESCALE == 64
 endif
 
 
-MON_INPUT_BUFFER:      equ ROM_END ; command line input buffer in HIMEM
-MON_INPUT_BUFFER_SIZE: equ $100 ; 256 bytes
-MON_EXPR_WORDSTOR:     equ MON_INPUT_BUFFER + MON_INPUT_BUFFER_SIZE ; single word storage for expression parser
-MON_EXPR_ANSWER:       equ MON_EXPR_WORDSTOR + 2 ; memory for last parsed expression
+
+; --------------- DATA AREAS --------------------
+
+DAT_INPUT_BUFFER:          equ ROM_END ; command line input buffer in HIMEM
+DAT_INPUT_BUFFER_SIZE:     equ $100 ; 256 bytes
+DAT_EXPR_WORDSTOR:         equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE ; single word storage for expression parser
+DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
+DAT_DISK_CALLBACK:         equ DAT_EXPR_ANSWER + 2
+DAT_DISK_DATAPTR:          equ DAT_DISK_CALLBACK + 2
+DAT_DISK_DATACOUNT:        equ DAT_DISK_DATAPTR + 2
+DAT_DISK_DATABUFFER:       equ DAT_DISK_DATACOUNT + 2
 
 
-
-
-    org $0000
 
 ; ------------- MONITOR JUMP VECTOR -------------
+
+    org $0000
 
     jp main
     jp monitorToRam
@@ -424,7 +432,12 @@ fdc_init:
     ; initialize interrupt vector for fdc
     ld A, low isrtable_fdc
     out (IO_IVR_FDC), A
-    
+
+    ld HL, $0000
+    ld (DAT_DISK_CALLBACK), HL
+    ld (DAT_DISK_DATAPTR), HL
+    ld (DAT_DISK_DATACOUNT), HL
+
     ; we assume the FDC is still in reset-mode
     ; set Mode Select bit in operation register for Special mode. Reset DMA bit for interrupt mode
     ld A, [1 << BIT_FDC_MODE_SELECT]
@@ -456,15 +469,47 @@ fdc_home:
     
     ; the FDC is stepping the drive now. we need to wait until stepping is finished
     ;  and has head has reached a home sector.
-    ei
-    hlt
-
+_fdc_home_wait:
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp nz, _fdc_home_wait
+    
     ; stepping is finished.
     ; next, read SR0 to check if drive has successfully reached track 0
+    call fdc_senseInterruptStatus
     
-    ret    
+    
+    ret
 
-        
+
+
+; Loads status register 0 from controller. ST0 will be stored in B, the current cylinder
+;  index of the drive will be stored in A
+fdc_senseInterruptStatus:
+    call fdc_emptyDataBuffer
+    ld A, $08
+    out (IO_FDC_DATA), A
+    
+    ; wait for result phase
+_fdc_senseInterruptStatus_wait:
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp nz, _fdc_senseInterruptStatus_wait
+
+    ; read ST0
+    call fdc_waitForRFM
+    jp nc, fdc_error   ; FDC should have two bytes to read now
+    in A, (IO_FDC_DATA)
+    ld B, A
+
+    ; read current cylinder index
+    call fdc_waitForRFM
+    jp nc, fdc_error
+    in A, (IO_FDC_DATA)
+
+    ret
+    
+
 
 ; Waits until the FDC reports a Request For Master. After that, it checks the data direction
 ;  bit. If it is is set to "waiting for input" the carry flag is reset, if bit is set to "data available"
@@ -509,7 +554,7 @@ fdc_diskError:
     ld HL, str_diskError
     call printString
     ret
-
+    
 
 
 ; Interrupt handler for floppy controller
@@ -525,23 +570,29 @@ fdc_isr:
     jp z, _fdc_isr_commandFinished
     
     ; a data byte is available or expected
+    ld HL, (DAT_DISK_DATAPTR)
+    ld DE, (DAT_DISK_DATACOUNT)
     call fdc_waitForRFM  ; RFM should already be set by now, but better be safe than sorry
     jp c, _fdc_isr_dataToFDC
 
     ; FDC has a byte to be stored in memory
     in A, (IO_FDC_DATA)
     ld (HL), A
-    inc HL
-    jp _fdc_isr_end
+    jp _fdc_isr_dataTransferFinished
 
 _fdc_isr_dataToFDC:
     ; FDC expects a data byte
     ld A, (HL)
     out (IO_FDC_DATA), A
+
+_fdc_isr_dataTransferFinished:
     inc HL
+    ld (DAT_DISK_DATAPTR), HL
     jp _fdc_isr_end
 
 _fdc_isr_commandFinished:
+    ; execution phase has ended. we need to read back data from result phase
+    ;  to reset irq pin
 
 _fdc_isr_end:
     exx
@@ -552,7 +603,7 @@ _fdc_isr_end:
 
 
 ; Waits for approximately 15us
-;  (recommended but not required beforeore reading MSR in command phase~
+;  (recommended but not required before reading MSR in command phase~
 ;   we use polling instead. might remove routine if no other useful application is found)
 fdc_delay:
     ld A, (CPU_SPEED/67000)/14  ; 1/15us = 67kHz, delay loop is 14 cycles long
@@ -953,11 +1004,11 @@ _expression_loop:
     dec C
     call _expression_term
     ret c  ; syntax error
-    ld (MON_EXPR_WORDSTOR), HL ; save HL
+    ld (DAT_EXPR_WORDSTOR), HL ; save HL
     pop HL
     call subtractHLDE
     ex DE, HL
-    ld HL, (MON_EXPR_WORDSTOR) ; restore HL
+    ld HL, (DAT_EXPR_WORDSTOR) ; restore HL
     jp _expression_loop
     
 _expression_add:
@@ -966,15 +1017,15 @@ _expression_add:
     dec C
     call _expression_term
     ret c ; syntax error
-    ld (MON_EXPR_WORDSTOR), HL
+    ld (DAT_EXPR_WORDSTOR), HL
     pop HL
     add HL, DE
     ex DE, HL
-    ld HL, (MON_EXPR_WORDSTOR)
+    ld HL, (DAT_EXPR_WORDSTOR)
     jp _expression_loop
     
 _expression_end:
-    ld (MON_EXPR_ANSWER), DE
+    ld (DAT_EXPR_ANSWER), DE
     jp resetCarryReturn
     
     
@@ -1008,7 +1059,7 @@ _expression_factor_subexpression:
 _expression_factor_answer:
     inc HL
     dec C
-    ld DE, (MON_EXPR_ANSWER)
+    ld DE, (DAT_EXPR_ANSWER)
     
 _expression_factor_end:
     call skipWhites
@@ -1078,7 +1129,7 @@ monitorPrompt_loop:
     ld A, MON_PROMPT ; print input prompt
     call printChar
     
-    ld HL, MON_INPUT_BUFFER ; this is where we want to store the read bytes
+    ld HL, DAT_INPUT_BUFFER ; this is where we want to store the read bytes
     call readString ; read user input
     
     ld A, C 
@@ -1725,7 +1776,7 @@ monitorToRam:
     ; give control to shovelknight
     jp shovelknight_ram
 
-shovelknight_ram:     equ MON_INPUT_BUFFER    ; where to store monitor ROM before disabling ROM mapping
+shovelknight_ram:     equ DAT_INPUT_BUFFER    ; where to store monitor ROM before disabling ROM mapping
 shovelknight_size:    equ shovelknight_rom_end - shovelknight_rom                   
 shovelknight_ram_end: equ shovelknight_ram + shovelknight_size    
     
