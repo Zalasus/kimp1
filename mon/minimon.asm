@@ -1,13 +1,13 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.2
+;           VERSION 0.3
 ;
 ;       for the KIMP1 system
 ;
 ;  written for the zmac assembler
 ;
-;      Copyleft 2016 Zalasus
+;      Copyleft 2017 Zalasus
 ;       all wrongs reversed
 ;-----------------------------------
 
@@ -48,6 +48,7 @@ TERM_RUBOUT: equ $20 ; whatever character is not visible (space, del or whatever
 ; monitor command characters
 MON_COM_RUN:        equ 'x'
 MON_COM_RUN_JUMP:   equ '!'
+MON_COM_REGISTER:   equ 'f'
 MON_COM_LOAD:       equ 'l'
 MON_COM_BOOT:       equ 'b'
 MON_COM_VERSION:    equ 'v'
@@ -85,7 +86,8 @@ endif
 
 DAT_INPUT_BUFFER:          equ ROM_END ; command line input buffer in HIMEM
 DAT_INPUT_BUFFER_SIZE:     equ $100 ; 256 bytes
-DAT_EXPR_WORDSTOR:         equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE ; single word storage for expression parser
+DAT_MON_REG_BUFFER:        equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE
+DAT_EXPR_WORDSTOR:         equ DAT_MON_REG_BUFFER + 16 ; single word storage for expression parser
 DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
 DAT_DISK_CALLBACK:         equ DAT_EXPR_ANSWER + 2
 DAT_DISK_DATAPTR:          equ DAT_DISK_CALLBACK + 2
@@ -166,6 +168,9 @@ endif
     ld HL, RAM_END ; init stackpointer to end of memory
     ld SP,HL
 
+    ld HL, $0000  ; catch any stack underflows
+    push HL
+
     ; init interrupt handlers
     im 2
     ld A, high isrtable
@@ -208,8 +213,9 @@ _soft_reset_loop:
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.2 FOR KIMP1', $0A
-    db ' WRITTEN BY ZALASUS', $0A, $00
+    db 'MINIMON 0.3 FOR KIMP1', $0A
+    db 'COPYLEFT 2017 ZALASUS', $0A
+    db ' ALL WRONGS REVERSED', $0A, $00
     
 str_pressPlayOnTape:
     db 'PRESS PLAY ON TAPE', $0A, $00
@@ -228,6 +234,9 @@ str_diskError:
 
 str_fdcError:
     db 'DISK CONTROLLER ERROR', $0A, $00
+
+str_extNotPresent:
+    db 'EXTENSION BOARD NOT PRESENT', $0A, $00
 
 str_readingHex:
     db 'READING HEX...', $0A, $00
@@ -257,6 +266,7 @@ else
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
     db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
+    db 'f          Print flags and registers as returned by last call', $0A
     db 'c S, D, C  Copy C bytes from S to D', $0A
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A
@@ -422,6 +432,33 @@ clearScreen:
     ld HL, str_cls
     call printString
     ret
+
+
+
+;---------------------- EXTENSION BOARD ROUTINES ----------------------
+
+; Checks if extension board is present. 
+;  Sets carry bit if present, resets if not.
+ext_test:
+    ; TEST bit should always read inverted value as written if 
+    ;  board is plugged in. Check both states twice to be sure
+    call _ext_test_cl
+    ret nc  ; first try failed. no need to do a second run
+
+_ext_test_cl:
+    ld A, $01
+    out (IO_EBCR), A
+    in A, (IO_EBCR)
+    bit BIT_EBCR_TEST, A
+    jp nz, resetCarryReturn
+
+    xor A
+    out (IO_EBCR), A
+    in A, (IO_EBCR)
+    bit BIT_EBCR_TEST, A
+    jp z, resetCarryReturn
+
+    jp setCarryReturn
 
 
 
@@ -773,7 +810,7 @@ readHex:
     add A
     add A
     add A
-    ld B,A
+    ld B, A
 
     call readChar
     call parseHex
@@ -852,21 +889,21 @@ _parseHexWord_loop:
     ; we have parsed a valid hex char
     
     ; perform a shift-left-by-4 operation on DE register
-    ex DE,HL
+    ex DE, HL
     add HL, HL
     add HL, HL
     add HL, HL
     add HL, HL
-    ex DE,HL
+    ex DE, HL
     
     ; insert loaded char into DE
-    ld B,A
-    ld A,E
-    add A,B
-    ld E,A
-    ld A,D ; add carry bit to D
-    adc A,0
-    ld D,A
+    ld B, A
+    ld A, E
+    add A, B
+    ld E, A
+    ld A, D ; add carry bit to D
+    adc A, 0
+    ld D, A
     
     inc HL
     dec C
@@ -1159,6 +1196,9 @@ monitorPrompt_loop:
     cp MON_COM_RUN
     jp z, command_run
     
+    cp MON_COM_REGISTER
+    jp z, command_register
+    
     cp MON_COM_STORE
     jp z, command_store
     
@@ -1223,19 +1263,203 @@ command_run:
     ld A, (HL)
     cp MON_COM_RUN_JUMP
     jp z, _command_run_nocall
+
     ; there's no indirect call, so we put the return address on the stack ourself.
-    ;  let called code return back to monitor loop (let's just hope the program doesn't ruin anything)
-    ld DE, monitorPrompt_loop
+    ;  let called code return to cleanup routine (let's just hope the program doesn't ruin anything)
+    ld DE, _command_run_cleanup
     push DE
+    jp _command_run_noskip
+
 _command_run_nocall:
-    
-    ; parse expression in input buffer and store result in DE
+    inc HL ; skip ! token for expression parser
+    dec C
+_command_run_noskip:
     call expression
     jp c, monitor_syntaxError
+
 
     ex DE, HL
     jp (HL)
     
+_command_run_cleanup:
+    ; we end up here when called routine returns
+    ;  stash register file in buffer to be examined by Register command
+
+    
+    ; layout of buffer is: 01 23 45 6 7 8 9 A B C D E
+    ;                      IX IY SP A F B C D E H L I (16 bit regs as LE)
+
+    ; stash 16 bit registers first so we don't need to worry about their contents anymore
+    ;  and can use IX for accessing the buffer
+    ld (DAT_MON_REG_BUFFER), IX
+    ld (DAT_MON_REG_BUFFER+2), IY
+    ld (DAT_MON_REG_BUFFER+4), SP
+
+    ld IX, DAT_MON_REG_BUFFER
+    ld (IX + $6), A
+    ld (IX + $8), B
+    ld (IX + $9), C
+    ld (IX + $A), D
+    ld (IX + $B), E
+    ld (IX + $C), H
+    ld (IX + $D), L
+
+    ld A, I
+    ld (IX + $E), A
+
+    ; only way to access F directly is via the stack
+    push AF
+    pop HL
+    ld (IX + $7), L
+
+    jp monitorPrompt_loop
+
+
+
+; Prints the saved register buffer in human readable format
+;  NOTE: Quick and dirty routine. Surely to be compacted somehow.
+command_register:
+    ld IX, DAT_MON_REG_BUFFER
+    
+    ; F: NZ NC PO P
+    ; A: 00 I: 00
+    ; BC: 0000
+    ; DE: 0000
+    ; HL: 0000
+    ; SP: 0000
+    ; IX: 0000 IY: 0000
+
+    ; NOTE: this bit assignment might not be portable
+    ld E, 'F'
+    call __command_register_rn8
+    ld C, (IX + $7)
+
+    ld A, C
+    ld D, 'C'
+    bit 0, A
+    call __command_register_fs
+
+    ld A, C
+    ld D, 'N'
+    bit 1, A
+    call __command_register_fs
+
+    ld A, C
+    ld D, 'P'
+    bit 2, A
+    call __command_register_fs
+
+    ld A, C
+    ld D, 'H'
+    bit 4, A
+    call __command_register_fs
+
+    ld A, C
+    ld D, 'Z'
+    bit 6, A
+    call __command_register_fs
+
+    ld A, C
+    ld D, 'S'
+    bit 7, A
+    call __command_register_fs
+
+    call printNewLine
+
+    ld E, 'A'
+    call __command_register_rn8
+    ld A, (IX + $6)
+    call printHex
+    ld A, TERM_SPACE
+    call printChar
+
+    ld E, 'I'
+    call __command_register_rn8
+    ld A, (IX + $E)
+    call printHex
+    call printNewLine
+
+    ld D, 'B'
+    ld E, 'C'
+    call __command_register_rn16
+    ld A, (IX + $8)
+    call printHex
+    ld A, (IX + $9)
+    call printHex
+    call printNewLine
+
+    ld D, 'D'
+    ld E, 'E'
+    call __command_register_rn16
+    ld A, (IX + $A)
+    call printHex
+    ld A, (IX + $B)
+    call printHex
+    call printNewLine
+
+    ld D, 'H'
+    ld E, 'L'
+    call __command_register_rn16
+    ld A, (IX + $C)
+    call printHex
+    ld A, (IX + $D)
+    call printHex
+    call printNewLine
+
+    ld D, 'S'
+    ld E, 'P'
+    call __command_register_rn16
+    ld A, (IX + $5) ; LE!!
+    call printHex
+    ld A, (IX + $4)
+    call printHex
+    call printNewLine
+
+    ld D, 'I'
+    ld E, 'X'
+    call __command_register_rn16
+    ld A, (IX + $1)
+    call printHex
+    ld A, (IX + $0)
+    call printHex
+    ld A, TERM_SPACE
+    call printChar
+    
+    ld D, 'I'
+    ld E, 'Y'
+    call __command_register_rn16
+    ld A, (IX + $3)
+    call printHex
+    ld A, (IX + $2)
+    call printHex
+    call printNewLine
+
+    jp monitorPrompt_loop
+    
+__command_register_rn16:
+    ld A, D
+    call printChar
+__command_register_rn8:
+    ld A, E
+    call printChar
+    ld A, ':'
+    call printChar
+    ld A, TERM_SPACE
+    call printChar   
+    ret
+
+__command_register_fs:
+    ; D = flag name, prefixed with N if reset
+    jp nz, __command_register_fs_cont
+    ld A, 'N'
+    call printChar
+__command_register_fs_cont:
+    ld A, D
+    call printChar
+    ld A, TERM_SPACE
+    call printChar
+    ret
+
     
     
 ; Loads the first record on tape into memory at given address
@@ -1250,7 +1474,7 @@ command_load:
     call printString
 _command_load_waitForTape:
     in A,(IO_TCCR)
-    and [1 << BIT_TCCR_TAPE_SENSE] ; mask out SENSE bit
+    and [1 << BIT_TCCR_TAPE_SENSE] ; mask out SENSE bit (active low!)
     jp nz,_command_load_waitForTape ; wait until user pushes play button
     
     ; user pushed play button. print loading message
@@ -1271,7 +1495,7 @@ _command_load_tapeLoop:
     
     ; second, compare it with the previous state
     sub B
-    jp P, _command_load_tapeLoop 
+    jp p, _command_load_tapeLoop 
     
     ; now we store the current state
     ld C,A
@@ -1293,7 +1517,16 @@ _command_load_tapeLoop:
 
 ; Loads the first sector from drive A into memory and jumps to the loaded code
 command_boot:
+    ; first, check if extension board is plugged in
+    call ext_test
+    jp c, _command_boot_cont
 
+    ; board is not present. print error
+    ld HL, str_extNotPresent
+    call printString
+    jp monitorPrompt_loop
+
+_command_boot_cont:
     ld HL, str_notImplemented
     call printString
 

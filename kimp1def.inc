@@ -147,9 +147,12 @@ BIT_FDC_WRITE_PROTECTED_LEGACY: equ 6 ; active low
 
 
 
-;---------------Interrupt Vector Registers--------------
+;---------------Control Registers--------------
 IO_IVR_FDC:   equ $3C
-IO_IVR_RTC:   equ $5C
+IO_IVR_RTC:   equ $3D
+IO_EBCR:      equ $3E
+
+BIT_EBCR_TEST:   equ 0
 
 
 
