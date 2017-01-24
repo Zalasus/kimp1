@@ -153,6 +153,7 @@ IO_IVR_RTC:   equ $3D
 IO_EBCR:      equ $3E
 
 BIT_EBCR_TEST:   equ 0
+BIT_EBCR_TC:     equ 2
 
 
 

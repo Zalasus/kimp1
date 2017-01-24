@@ -464,7 +464,11 @@ _ext_test_cl:
 
 ;----------------------------- DISK IO --------------------------------
 
-; Initializes the FDC to Special mode, setting data rate etc.
+; drive parameter table
+fdc_dat_bps:
+    db $03
+
+; Initializes the FDC to AT mode, setting data rate etc.
 fdc_init:
     ; initialize interrupt vector for fdc
     ld A, low isrtable_fdc
@@ -475,13 +479,17 @@ fdc_init:
     ld (DAT_DISK_DATAPTR), HL
     ld (DAT_DISK_DATACOUNT), HL
 
-    ; we assume the FDC is still in reset-mode
-    ; set Mode Select bit in operation register for Special mode. Reset DMA bit for interrupt mode
-    ld A, [1 << BIT_FDC_MODE_SELECT]
+_fdc_reset:
+    ; issue a soft reset to make sure FDC is in reset mode
+    in A, (IO_FDC_OPER)
+    ld B, A
+    xor A
     out (IO_FDC_OPER), A
-    ; according to the crap datasheet we must read the control register now
-    in A, (IO_FDC_CONT)   ; the CR is write-only, so this should just return crap
-    ; we are now in Special mode
+    call fdc_delay
+    ; controller is now reset, restore original contents of OPR,
+    ;  thereby also initializing AT mode
+    ld A, B
+    out (IO_FDC_OPER), A
     
     ; initalize data rate
     ; 500K MFM @ 32MHz~ let's not go to fast. I'm easily scared by data rates
@@ -492,60 +500,87 @@ fdc_init:
 
     
 
-; Moves the drive specified by two LSbs of B to home sector. Blocking call
-fdc_home:
-    call fdc_emptyDataBuffer  ; make sure FDC accepts commands
+; Recalibrates the drive specified by two LSbs of B. Drive is moved 
+;  to track 0 and controller internal sector counters are reset.
+;  If no errors occur, the carry bit is reset or set otherwise.
+fdc_recalibrate:
+    call fdc_preCommandCheck  ; make sure FDC accepts commands
     ld A, $07 ; recalibrate command
     out (IO_FDC_DATA), A
 
     call fdc_waitForRFM
-    jp c, fdc_error  ; direction must now be input~ reclibrate requires 2 bytes
+    jp c, setCarryReturn  ; direction must still be input~ reclibrate requires 2 bytes
     ld A, B
     and $03 ; we only need the two lower bits for the drive number
     out (IO_FDC_DATA), A
     
     ; the FDC is stepping the drive now. we need to wait until stepping is finished
-    ;  and has head has reached a home sector.
-_fdc_home_wait:
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp nz, _fdc_home_wait
-    
+    ;  and head has has reached track 0.
+    call fdc_waitForExecEndIrq
+
     ; stepping is finished.
     ; next, read SR0 to check if drive has successfully reached track 0
     call fdc_senseInterruptStatus
+    ret c
     
+    bit BIT_FDC_SEEK_END, B
+    jp z, setCarryReturn
+    bit BIT_FDC_EQUIPMENT_CHECK, B
+    jp nz, setCarryReturn
     
-    ret
+    jp resetCarryReturn
 
 
 
 ; Loads status register 0 from controller. ST0 will be stored in B, the current cylinder
-;  index of the drive will be stored in A
+;  index of the drive will be stored in A.
+;  Carry used as error bit.
 fdc_senseInterruptStatus:
-    call fdc_emptyDataBuffer
+    call fdc_preCommandCheck
     ld A, $08
     out (IO_FDC_DATA), A
-    
-    ; wait for result phase
-_fdc_senseInterruptStatus_wait:
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp nz, _fdc_senseInterruptStatus_wait
+    ; command issued. this command has no execution phase and won't produce
+    ;  an interrupt. data can be read back right away (hopefully)
 
     ; read ST0
     call fdc_waitForRFM
-    jp nc, fdc_error   ; FDC should have two bytes to read now
+    jp nc, setCarryReturn   ; FDC should have two bytes to read now
     in A, (IO_FDC_DATA)
     ld B, A
 
     ; read current cylinder index
     call fdc_waitForRFM
-    jp nc, fdc_error
+    jp nc, setCarryReturn
     in A, (IO_FDC_DATA)
 
     ret
-    
+ 
+
+
+; Checks initial condition for issuing commands to the FDC. Waits for 
+;  RQM signal and checks if DIO signal is set to "input".
+;  If not, this routine will reset the controller and try again. This will bring the 
+;  controller in the right state eventually or just hang forever.
+;  TODO: Might check for busy bit also
+fdc_preCommandCheck:
+    call fdc_waitForRFM
+    ret c  ; if carry set -> FDC awaits input. all ready
+
+    call _fdc_reset
+    jp fdc_preCommandCheck
+
+
+   
+; Waits for exec phase to end. Only to be used for commands
+;  that produce IRQs
+fdc_waitForExecEndIrq:
+    hlt
+    ; if we're still in exec mode, the interrupt that ended the halt was for byte
+    ;  transfer -> halt again. we're done otherwise
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp nz, fdc_waitForExecEndIrq
+    ret
 
 
 ; Waits until the FDC reports a Request For Master. After that, it checks the data direction
@@ -562,22 +597,6 @@ fdc_waitForRFM:
 
 
 
-; Reads and discards bytes from the FDC data register until Request For Master is set and
-;  direction bit reports "waiting for input". Can also be used to archive initial condition
-;  when issuing commands to the FDC
-fdc_emptyDataBuffer:
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp z, fdc_emptyDataBuffer
-
-    bit BIT_FDC_DATA_INPUT, A
-    ret z ; DIO = 0 -> data register expects input. we are done
-    
-    in A, (IO_FDC_DATA)
-    jp fdc_emptyDataBuffer
-
-
-
 ; Prints FDC error message and returns
 fdc_error:
     ld HL, str_fdcError
@@ -586,7 +605,7 @@ fdc_error:
 
 
 
-; Prints Floppy Disk Error messag and returns
+; Prints Floppy Disk Error message and returns
 fdc_diskError:
     ld HL, str_diskError
     call printString
@@ -595,13 +614,14 @@ fdc_diskError:
 
 
 ; Interrupt handler for floppy controller
+;  Handles data transfer between controller and memory
 fdc_isr:
     exx
     ex af, af'
     ; interrupt from the fdc. check what to do:
     ;  if we're still in exec mode, a data byte is available or expected.
     ;  if not, exec mode has ended and the interrupt indicates a
-    ;  command has finished executing.
+    ;  command has finished executing or something went wrong
     in A, (IO_FDC_STAT)
     bit BIT_FDC_EXEC_MODE, A
     jp z, _fdc_isr_commandFinished
@@ -625,11 +645,17 @@ _fdc_isr_dataToFDC:
 _fdc_isr_dataTransferFinished:
     inc HL
     ld (DAT_DISK_DATAPTR), HL
+    inc DE
+    ld (DAT_DISK_DATACOUNT), DE
     jp _fdc_isr_end
 
 _fdc_isr_commandFinished:
-    ; execution phase has ended. we need to read back data from result phase
-    ;  to reset irq pin
+    ; execution phase has ended
+    ; NOTE:
+    ;  the datasheet is not clear on whether any read/write will reset IRQ or 
+    ;  a data register access specifically. If the latter is the case we have to
+    ;  somehow make the IRQ line come inactive here. Otherwise, do nothing and
+    ;  let the command routine handle everything as we issued multiple reads of MSR above
 
 _fdc_isr_end:
     exx
