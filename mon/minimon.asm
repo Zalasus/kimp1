@@ -89,7 +89,8 @@ DAT_INPUT_BUFFER_SIZE:     equ $100 ; 256 bytes
 DAT_MON_REG_BUFFER:        equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE
 DAT_EXPR_WORDSTOR:         equ DAT_MON_REG_BUFFER + 16 ; single word storage for expression parser
 DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
-DAT_DISK_CALLBACK:         equ DAT_EXPR_ANSWER + 2
+DAT_RTC_COUNTER:           equ DAT_EXPR_ANSWER + 2
+DAT_DISK_CALLBACK:         equ DAT_RTC_COUNTER + 1
 DAT_DISK_DATAPTR:          equ DAT_DISK_CALLBACK + 2
 DAT_DISK_DATACOUNT:        equ DAT_DISK_DATAPTR + 2
 DAT_DISK_DATABUFFER:       equ DAT_DISK_DATACOUNT + 2
@@ -468,7 +469,8 @@ _ext_test_cl:
 fdc_dat_bps:
     db $03
 
-; Initializes the FDC to AT mode, setting data rate etc.
+; Initializes the FDC to AT mode, setting data rate etc. Note that this will enable interrupts,
+;  as they are required for proper operation of the FDC
 fdc_init:
     ; initialize interrupt vector for fdc
     ld A, low isrtable_fdc
@@ -531,7 +533,34 @@ fdc_recalibrate:
     jp resetCarryReturn
 
 
+; Sets drive parameters for the currently selected unit
+;  Uses fixed parameters for step rate and load time that should provide
+;  stable operation (Load = 80ms, Step = 10ms, Unload = 16ms). DMA mode is disabled.
+fdc_specify:
+    call fdc_preCommandCheck
+    ld A, $03   ; specify command
+    
+    call fdc_waitForRFM
+    jp c, setCarryReturn
+    ld A, $51   ; unload time and step rate
+    out (IO_FDC_DATA), A    
 
+    call fdc_waitForRFM
+    jp c, setCarryReturn
+    ld A, [$28 << 1] | 1 ; load time and Non-DMA-Bit (set)
+    out (IO_FDC_DATA), A
+
+    ; no exec or result phase
+
+    ret
+
+
+
+; Selects drive specified by 2 LSbs of B and waits the appropriate selection delay
+fdc_driveSelect:
+
+
+    
 ; Loads status register 0 from controller. ST0 will be stored in B, the current cylinder
 ;  index of the drive will be stored in A.
 ;  Carry used as error bit.
@@ -581,6 +610,7 @@ fdc_waitForExecEndIrq:
     bit BIT_FDC_EXEC_MODE, A
     jp nz, fdc_waitForExecEndIrq
     ret
+
 
 
 ; Waits until the FDC reports a Request For Master. After that, it checks the data direction
@@ -683,8 +713,12 @@ _fdc_delay_loop:
 
 ; Initializes the RTC, including the IVR etc.
 rtc_init:
+    ld A, $01  ; disable RTC interrupt (mask bit = 1)
+    out (IO_RTC_CE), A
+
     ld A, low isrtable_rtc
     out (IO_IVR_RTC), A
+
     ret
     
 
@@ -758,6 +792,34 @@ _rtc_printTime_done:
 
 
 
+; Uses the RTC interrupt to delay a time interval given by A. The delay time
+;  equals A*1/64 seconds +/- a few clock cycles.
+rtc_delay:
+    di
+
+    ld (DAT_RTC_COUNTER), A
+
+    ld A, low isrtable_rtc
+    out (IO_IVR_RTC), A
+
+    ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
+    out (IO_RTC_CE), A
+
+    ei
+
+_rtc_delay_loop:
+    hlt
+    ld A, (DAT_RTC_COUNTER)
+    or A
+    jp nz, _rtc_delay_loop
+    
+    ld A, $01  ; mask bit = 1
+    out (IO_RTC_CE), A
+
+    ret
+
+    
+
 ; Interrupt handler for the timed interval interrupt by the RTC
 rtc_isr:
     exx
@@ -768,6 +830,10 @@ rtc_isr:
     and ~[1 << BIT_RTC_IRQ_FLAG]
     out (IO_RTC_CD), A
     
+    ld A, (DAT_RTC_COUNTER)
+    dec A
+    ld (DAT_RTC_COUNTER), A
+
     exx
     ex af, af'
     ei
@@ -2016,6 +2082,29 @@ _command_print_loop:
 
     
 ; --------------------- MISC ROUTINES ----------------------
+
+; The last resort. If anything goes horribly wrong, this method can be used
+;  to provide feedback via the LED connected to the UART. Disables interrupts.
+panic:
+    di
+    ld B, 0
+
+_panic_loop_entry:
+    ld HL, 0
+_panic_loop:
+    inc HL
+    ld A, H
+    or L
+    jp nz, _panic_loop 
+
+    ld A, B
+    xor [1 << BIT_UART_DTR]
+    out (IO_UART_COM), A
+    ld B, A
+    
+    jp _panic_loop_entry
+
+
 
 ; Copies Minimon ROM into RAM and disables ROM mapping. 
 ;  Control is given back to monitor prompt after copying has finished.
