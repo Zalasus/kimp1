@@ -599,19 +599,6 @@ fdc_preCommandCheck:
     jp fdc_preCommandCheck
 
 
-   
-; Waits for exec phase to end. Only to be used for commands
-;  that produce IRQs
-fdc_waitForExecEndIrq:
-    hlt
-    ; if we're still in exec mode, the interrupt that ended the halt was for byte
-    ;  transfer -> halt again. we're done otherwise
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp nz, fdc_waitForExecEndIrq
-    ret
-
-
 
 ; Waits until the FDC reports a Request For Master. After that, it checks the data direction
 ;  bit. If it is is set to "waiting for input" the carry flag is reset, if bit is set to "data available"
@@ -624,6 +611,59 @@ fdc_waitForRFM:
     bit BIT_FDC_DATA_INPUT, A
     jp nz, resetCarryReturn ; DIO = 1 -> data register expects to be read
     jp setCarryReturn
+
+
+
+; Polls the FDC's MSR until RQM goes high. Then a byte from (HL) is written to the FDC.
+;  This process is repeated until exec mode ends.
+;  NOTE: This routine dos not check the DIO flag to see if FDC really expects a write.
+;  Doing so would cost another handful of cycles we really can't afford. Use this routine
+;  only for commands that will write to the FDC.
+fdc_wtransfer:
+    ld C, IO_FDC_DATA   ; IO port for outi instruction
+_fdc_wtransfer_wait:
+    in A, (IO_FDC_STAT)
+    and [1 << BIT_FDC_REQUEST_FOR_MASTER]
+    jp z, _fdc_wtransfer_wait
+
+_fdc_wtransfer_dataLoop:
+    outi
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp z, _fdc_wtransfer_end
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
+    jp nz, _fdc_wtransfer_dataLoop
+    jp _fdc_wtransfer_wait
+
+_fdc_wtransfer_end:
+    ret    
+
+
+
+; Polls the FDC's MSR until RQM goes high. Then a byte from the FDC is written to (HL).
+;  This process is repeated until exec mode ends.
+;  NOTE: This routine dos not check the DIO flag to see if FDC really expects a read.
+;  Doing so would cost another handful of cycles we really can't afford. Use this routine
+;  only for commands that will read from the FDC.
+fdc_rtransfer:
+    ld C, IO_FDC_DATA   ; IO port for ini instruction
+_fdc_rtransfer_wait:
+    in A, (IO_FDC_STAT)
+    and [1 << BIT_FDC_REQUEST_FOR_MASTER]
+    jp z, _fdc_rtransfer_wait
+
+_fdc_rtransfer_dataLoop:
+    ini
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_EXEC_MODE, A
+    jp z, _fdc_rtransfer_end
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
+    jp nz, _fdc_rtransfer_dataLoop
+    jp _fdc_rtransfer_wait
+
+_fdc_rtransfer_end:
+    ret    
+
 
 
 
@@ -643,54 +683,8 @@ fdc_diskError:
     
 
 
-; Interrupt handler for floppy controller
-;  Handles data transfer between controller and memory
+; Interrupt handler for the FDC
 fdc_isr:
-    exx
-    ex af, af'
-    ; interrupt from the fdc. check what to do:
-    ;  if we're still in exec mode, a data byte is available or expected.
-    ;  if not, exec mode has ended and the interrupt indicates a
-    ;  command has finished executing or something went wrong
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp z, _fdc_isr_commandFinished
-    
-    ; a data byte is available or expected
-    ld HL, (DAT_DISK_DATAPTR)
-    ld DE, (DAT_DISK_DATACOUNT)
-    call fdc_waitForRFM  ; RFM should already be set by now, but better be safe than sorry
-    jp c, _fdc_isr_dataToFDC
-
-    ; FDC has a byte to be stored in memory
-    in A, (IO_FDC_DATA)
-    ld (HL), A
-    jp _fdc_isr_dataTransferFinished
-
-_fdc_isr_dataToFDC:
-    ; FDC expects a data byte
-    ld A, (HL)
-    out (IO_FDC_DATA), A
-
-_fdc_isr_dataTransferFinished:
-    inc HL
-    ld (DAT_DISK_DATAPTR), HL
-    inc DE
-    ld (DAT_DISK_DATACOUNT), DE
-    jp _fdc_isr_end
-
-_fdc_isr_commandFinished:
-    ; execution phase has ended
-    ; NOTE:
-    ;  the datasheet is not clear on whether any read/write will reset IRQ or 
-    ;  a data register access specifically. If the latter is the case we have to
-    ;  somehow make the IRQ line come inactive here. Otherwise, do nothing and
-    ;  let the command routine handle everything as we issued multiple reads of MSR above
-
-_fdc_isr_end:
-    exx
-    ex af, af'
-    ei
     ret
 
 
