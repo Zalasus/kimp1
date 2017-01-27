@@ -90,8 +90,8 @@ DAT_MON_REG_BUFFER:        equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE
 DAT_EXPR_WORDSTOR:         equ DAT_MON_REG_BUFFER + 16 ; single word storage for expression parser
 DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
 DAT_RTC_COUNTER:           equ DAT_EXPR_ANSWER + 2
-DAT_DISK_CALLBACK:         equ DAT_RTC_COUNTER + 1
-DAT_DISK_DATAPTR:          equ DAT_DISK_CALLBACK + 2
+DAT_DISK_IRQFLAG:          equ DAT_RTC_COUNTER + 1
+DAT_DISK_DATAPTR:          equ DAT_DISK_IRQFLAG + 1
 DAT_DISK_DATACOUNT:        equ DAT_DISK_DATAPTR + 2
 DAT_DISK_DATABUFFER:       equ DAT_DISK_DATACOUNT + 2
 
@@ -556,8 +556,38 @@ fdc_specify:
 
 
 
-; Selects drive specified by 2 LSbs of B and waits the appropriate selection delay
+; Selects and enables motor of drive specified by LSb of B and waits the appropriate delay for
+;  spinning up to speed. Disables motor of other drive. If B > 1, both motors are deactivated.
+;  There's no spindown time if both motors are deactivated.
 fdc_driveSelect:
+    in A, (IO_FDC_OPER)
+    and ~[[1 << BIT_FDC_MOTOR_ON_ENABLE_1] | [1 << BIT_FDC_MOTOR_ON_ENABLE_2]] ; turn off both motor bits
+
+    ld A, B
+    and $fe
+    jp nz, _fdc_driveSelect_disableBoth ; B is > 1. we're done
+    
+    bit 0, B
+    jp nz, _fdc_driveSelect_drive2
+
+    set BIT_FDC_MOTOR_ON_ENABLE_1, A
+    res BIT_FDC_DRIVE_SELECT, A
+    jp _fdc_motorEnable_spinup
+_fdc_motorEnable_mot2:
+    set BIT_FDC_MOTOR_ON_ENABLE_2, A
+    set BIT_FDC_DRIVE_SELECT, A
+_fdc_motorEnable_spinup:
+    out (IO_FDC_OPER), A
+
+    ; recommended spinup time is 500ms, which equals 32 RTC delay cycles
+    ld A, 32
+    call rtc_delay
+
+    ret
+
+_fdc_driveSelect_disableBoth:
+    out (IO_FDC_OPER), A
+    ret
 
 
     
@@ -793,7 +823,7 @@ _rtc_printTime_done:
 
 
 ; Uses the RTC interrupt to delay a time interval given by A. The delay time
-;  equals A*1/64 seconds +/- a few clock cycles.
+;  equals A*1/64 seconds +/- a few clock cycles. Will disable interrupts once finished.
 rtc_delay:
     di
 
@@ -815,6 +845,8 @@ _rtc_delay_loop:
     
     ld A, $01  ; mask bit = 1
     out (IO_RTC_CE), A
+
+    di
 
     ret
 
@@ -1245,7 +1277,13 @@ monitorStart:
     ld A, [(1 << BIT_UART_TXEN) | (1 << BIT_UART_RXEN) | (1 << BIT_UART_DTR)]
     out (IO_UART_COM), A
 
-    ; IO-Devices are now initialized
+    ; IO-Devices are now initialized. Check if extension board is present and initialize
+    ;  extension devices if neccessary
+    call ext_test
+    jp nc, _monitor_init_noext
+    call rtc_init
+    call fdc_init
+_monitor_init_noext:
     
     call clearScreen
   
