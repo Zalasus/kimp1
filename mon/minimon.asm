@@ -90,8 +90,8 @@ DAT_MON_REG_BUFFER:        equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE
 DAT_EXPR_WORDSTOR:         equ DAT_MON_REG_BUFFER + 16 ; single word storage for expression parser
 DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
 DAT_RTC_COUNTER:           equ DAT_EXPR_ANSWER + 2
-DAT_DISK_CALLBACK:         equ DAT_RTC_COUNTER + 1
-DAT_DISK_DATAPTR:          equ DAT_DISK_CALLBACK + 2
+DAT_DISK_IRQFLAG:          equ DAT_RTC_COUNTER + 1
+DAT_DISK_DATAPTR:          equ DAT_DISK_IRQFLAG + 1
 DAT_DISK_DATACOUNT:        equ DAT_DISK_DATAPTR + 2
 DAT_DISK_DATABUFFER:       equ DAT_DISK_DATACOUNT + 2
 
@@ -477,7 +477,7 @@ fdc_init:
     out (IO_IVR_FDC), A
 
     ld HL, $0000
-    ld (DAT_DISK_CALLBACK), HL
+    ld (DAT_DISK_IRQFLAG), HL
     ld (DAT_DISK_DATAPTR), HL
     ld (DAT_DISK_DATACOUNT), HL
 
@@ -493,9 +493,10 @@ _fdc_reset:
     ld A, B
     out (IO_FDC_OPER), A
     
-    ; initalize data rate
-    ; 500K MFM @ 32MHz~ let's not go to fast. I'm easily scared by data rates
-    ld A, [1 << BIT_FDC_DATARATE0] 
+    ; initialize data rate
+    ;  Lowest rate available, 125K @ FM. let's hope this will buy us enough time
+    ;  to handle the data transfer
+    ld A, [1 << BIT_FDC_DATARATE1] 
     out (IO_FDC_CONT), A
     
     ret
@@ -533,6 +534,7 @@ fdc_recalibrate:
     jp resetCarryReturn
 
 
+
 ; Sets drive parameters for the currently selected unit
 ;  Uses fixed parameters for step rate and load time that should provide
 ;  stable operation (Load = 80ms, Step = 10ms, Unload = 16ms). DMA mode is disabled.
@@ -556,8 +558,48 @@ fdc_specify:
 
 
 
-; Selects drive specified by 2 LSbs of B and waits the appropriate selection delay
+; Reads data from the currently selected disk
+fdc_readData:
+    di
+    ld HL, DAT_DISK_DATABUFFER
+    ; issue command
+    
+    call fdc_rtransfer
+
+    
+
+; Selects and enables motor of drive specified by LSb of B and waits the appropriate delay for
+;  spinning up to speed. Disables motor of other drive. If B > 1, both motors are deactivated.
+;  There's no spindown time if both motors are deactivated.
 fdc_driveSelect:
+    in A, (IO_FDC_OPER)
+    and ~[[1 << BIT_FDC_MOTOR_ON_ENABLE_1] | [1 << BIT_FDC_MOTOR_ON_ENABLE_2]] ; turn off both motor bits
+
+    ld A, B
+    and $fe
+    jp nz, _fdc_driveSelect_disableBoth ; B is > 1. we're done
+    
+    bit 0, B
+    jp nz, _fdc_driveSelect_drive2
+
+    set BIT_FDC_MOTOR_ON_ENABLE_1, A
+    res BIT_FDC_DRIVE_SELECT, A
+    jp _fdc_motorEnable_spinup
+_fdc_motorEnable_mot2:
+    set BIT_FDC_MOTOR_ON_ENABLE_2, A
+    set BIT_FDC_DRIVE_SELECT, A
+_fdc_motorEnable_spinup:
+    out (IO_FDC_OPER), A
+
+    ; recommended spinup time is 500ms, which equals 32 RTC delay cycles
+    ld A, 32
+    call rtc_delay
+
+    ret
+
+_fdc_driveSelect_disableBoth:
+    out (IO_FDC_OPER), A
+    ret
 
 
     
@@ -623,6 +665,7 @@ fdc_wtransfer:
     ld C, IO_FDC_DATA   ; IO port for outi instruction
 _fdc_wtransfer_wait:
     in A, (IO_FDC_STAT)
+_fdc_wtransfer_wait2:
     and [1 << BIT_FDC_REQUEST_FOR_MASTER]
     jp z, _fdc_wtransfer_wait
 
@@ -630,10 +673,7 @@ _fdc_wtransfer_dataLoop:
     outi
     in A, (IO_FDC_STAT)
     bit BIT_FDC_EXEC_MODE, A
-    jp z, _fdc_wtransfer_end
-    bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp nz, _fdc_wtransfer_dataLoop
-    jp _fdc_wtransfer_wait
+    jp nz, _fdc_wtransfer_wait2
 
 _fdc_wtransfer_end:
     ret    
@@ -649,17 +689,15 @@ fdc_rtransfer:
     ld C, IO_FDC_DATA   ; IO port for ini instruction
 _fdc_rtransfer_wait:
     in A, (IO_FDC_STAT)
-    and [1 << BIT_FDC_REQUEST_FOR_MASTER]
+_fdc_rtransfer_wait2:
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
     jp z, _fdc_rtransfer_wait
 
 _fdc_rtransfer_dataLoop:
     ini
     in A, (IO_FDC_STAT)
     bit BIT_FDC_EXEC_MODE, A
-    jp z, _fdc_rtransfer_end
-    bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp nz, _fdc_rtransfer_dataLoop
-    jp _fdc_rtransfer_wait
+    jp nz, _fdc_rtransfer_wait2
 
 _fdc_rtransfer_end:
     ret    
@@ -787,7 +825,7 @@ _rtc_printTime_done:
 
 
 ; Uses the RTC interrupt to delay a time interval given by A. The delay time
-;  equals A*1/64 seconds +/- a few clock cycles.
+;  equals A*1/64 seconds +/- a few clock cycles. Will disable interrupts once finished.
 rtc_delay:
     di
 
@@ -809,6 +847,8 @@ _rtc_delay_loop:
     
     ld A, $01  ; mask bit = 1
     out (IO_RTC_CE), A
+
+    di
 
     ret
 
@@ -832,6 +872,7 @@ rtc_isr:
     ex af, af'
     ei
     ret
+
 
 
 ;---------------------- PARSER & FORMATTER METHODS --------------------------  
@@ -1239,7 +1280,13 @@ monitorStart:
     ld A, [(1 << BIT_UART_TXEN) | (1 << BIT_UART_RXEN) | (1 << BIT_UART_DTR)]
     out (IO_UART_COM), A
 
-    ; IO-Devices are now initialized
+    ; IO-Devices are now initialized. Check if extension board is present and initialize
+    ;  extension devices if neccessary
+    call ext_test
+    jp nc, _monitor_init_noext
+    call rtc_init
+    call fdc_init
+_monitor_init_noext:
     
     call clearScreen
   
