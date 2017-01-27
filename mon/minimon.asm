@@ -477,7 +477,6 @@ fdc_init:
     out (IO_IVR_FDC), A
 
     ld HL, $0000
-    ld (DAT_DISK_CALLBACK), HL
     ld (DAT_DISK_DATAPTR), HL
     ld (DAT_DISK_DATACOUNT), HL
 
@@ -572,11 +571,13 @@ fdc_driveSelect:
 
     set BIT_FDC_MOTOR_ON_ENABLE_1, A
     res BIT_FDC_DRIVE_SELECT, A
-    jp _fdc_motorEnable_spinup
-_fdc_motorEnable_mot2:
+    jp _fdc_driveSelect_spinup
+
+_fdc_driveSelect_drive2:
     set BIT_FDC_MOTOR_ON_ENABLE_2, A
     set BIT_FDC_DRIVE_SELECT, A
-_fdc_motorEnable_spinup:
+
+_fdc_driveSelect_spinup:
     out (IO_FDC_OPER), A
 
     ; recommended spinup time is 500ms, which equals 32 RTC delay cycles
@@ -675,6 +676,8 @@ fdc_diskError:
 
 ; Interrupt handler for floppy controller
 ;  Handles data transfer between controller and memory
+;  ATTENTION: This ISR is probably way to slow to handle data transfers. See fdcPolling branch
+;   for possible alternative.
 fdc_isr:
     exx
     ex af, af'
@@ -1243,6 +1246,31 @@ subtractHLDE:
 
 
 
+;------------------------ MISC HELPER METHODS -------------------------------
+
+; Stashes the register file. Layout of buffer: AF BC DE HL SP IX IY I  (16 bit regs LE)
+stashRegisters:
+    ld (DAT_MON_REG_BUFFER+2), BC
+    ld (DAT_MON_REG_BUFFER+4), DE
+    ld (DAT_MON_REG_BUFFER+6), HL
+    ld (DAT_MON_REG_BUFFER+10), IX
+    ld (DAT_MON_REG_BUFFER+12), IY
+    
+    ld HL, $0002 ; stack pointer is two bytes to low when calling this. fix that manually
+    add HL, SP
+    ld (DAT_MON_REG_BUFFER+8), HL
+
+    push AF
+    pop HL
+    ld (DAT_MON_REG_BUFFER), HL
+
+    ld A, I
+    ld (DAT_MON_REG_BUFFER+14), A
+    
+    ret
+
+    
+
 ;------------------------- MAIN MONITOR LOOP --------------------------------     
    
 monitorStart:
@@ -1407,40 +1435,13 @@ _command_run_noskip:
     call expression
     jp c, monitor_syntaxError
 
-
     ex DE, HL
     jp (HL)
     
 _command_run_cleanup:
     ; we end up here when called routine returns
     ;  stash register file in buffer to be examined by Register command
-
-    
-    ; layout of buffer is: 01 23 45 6 7 8 9 A B C D E
-    ;                      IX IY SP A F B C D E H L I (16 bit regs as LE)
-
-    ; stash 16 bit registers first so we don't need to worry about their contents anymore
-    ;  and can use IX for accessing the buffer
-    ld (DAT_MON_REG_BUFFER), IX
-    ld (DAT_MON_REG_BUFFER+2), IY
-    ld (DAT_MON_REG_BUFFER+4), SP
-
-    ld IX, DAT_MON_REG_BUFFER
-    ld (IX + $6), A
-    ld (IX + $8), B
-    ld (IX + $9), C
-    ld (IX + $A), D
-    ld (IX + $B), E
-    ld (IX + $C), H
-    ld (IX + $D), L
-
-    ld A, I
-    ld (IX + $E), A
-
-    ; only way to access F directly is via the stack
-    push AF
-    pop HL
-    ld (IX + $7), L
+    call stashRegisters
 
     jp monitorPrompt_loop
 
@@ -1462,7 +1463,7 @@ command_register:
     ; NOTE: this bit assignment might not be portable
     ld E, 'F'
     call __command_register_rn8
-    ld C, (IX + $7)
+    ld C, (IX + 0)
 
     ld A, C
     ld D, 'C'
@@ -1498,59 +1499,59 @@ command_register:
 
     ld E, 'A'
     call __command_register_rn8
-    ld A, (IX + $6)
+    ld A, (IX + 1)
     call printHex
     ld A, TERM_SPACE
     call printChar
 
     ld E, 'I'
     call __command_register_rn8
-    ld A, (IX + $E)
+    ld A, (IX + 14)
     call printHex
     call printNewLine
 
     ld D, 'B'
     ld E, 'C'
     call __command_register_rn16
-    ld A, (IX + $8)
+    ld A, (IX + 3)
     call printHex
-    ld A, (IX + $9)
+    ld A, (IX + 2)
     call printHex
     call printNewLine
 
     ld D, 'D'
     ld E, 'E'
     call __command_register_rn16
-    ld A, (IX + $A)
+    ld A, (IX + 5)
     call printHex
-    ld A, (IX + $B)
+    ld A, (IX + 4)
     call printHex
     call printNewLine
 
     ld D, 'H'
     ld E, 'L'
     call __command_register_rn16
-    ld A, (IX + $C)
+    ld A, (IX + 7)
     call printHex
-    ld A, (IX + $D)
+    ld A, (IX + 6)
     call printHex
     call printNewLine
 
     ld D, 'S'
     ld E, 'P'
     call __command_register_rn16
-    ld A, (IX + $5) ; LE!!
+    ld A, (IX + 9) ; LE!!
     call printHex
-    ld A, (IX + $4)
+    ld A, (IX + 8)
     call printHex
     call printNewLine
 
     ld D, 'I'
     ld E, 'X'
     call __command_register_rn16
-    ld A, (IX + $1)
+    ld A, (IX + 11)
     call printHex
-    ld A, (IX + $0)
+    ld A, (IX + 10)
     call printHex
     ld A, TERM_SPACE
     call printChar
@@ -1558,9 +1559,9 @@ command_register:
     ld D, 'I'
     ld E, 'Y'
     call __command_register_rn16
-    ld A, (IX + $3)
+    ld A, (IX + 13)
     call printHex
-    ld A, (IX + $2)
+    ld A, (IX + 12)
     call printHex
     call printNewLine
 
