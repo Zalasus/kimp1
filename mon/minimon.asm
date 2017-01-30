@@ -122,30 +122,25 @@ DAT_DISK_DATABUFFER:       equ DAT_DISK_DATACOUNT + 2
 
 ; ---------- INTERRUPT SERVICE ROUTINE TABLE -------
 
-    org $0038
+; IM0 interrupt handlers here
 
-    ; catch restart for interrupt mode 1
-    jp isr_catch   
-
-
-    org $0040
-
-; list addresses of routines here using dw
-isrtable:
-isrtable_fdc:
-    dw fdc_isr
-isrtable_rtc:
-    dw rtc_isr
-isrtable_catch:
-    dw isr_catch
+    org $0030   ; rst 30h  ($f7)
+        ; unused restart vector. simply return
+        ret
 
 
 
-; Catches any unhandled interrupts.
-;  Do not re-enable interrupts here! If we end up here, something definitely went wrong
-;  and some device is still holding the /IRQ line low.
-isr_catch:
-    ret
+    org $0038   ; rst 38h  ($ff)
+        ; restart vector used by RTC IRQ
+        ;  since the RTC-IVR is shared by both RTC and OPL, we need to
+        ;  determine the exact cause for the interrupt here and jump to
+        ;  the right handler. RTC has priority over OPL
+        in A, (IO_EBCR)
+        bit BIT_EBCR_IRQ_RTC, A
+        jp z, rtc_isr
+        bit BIT_EBCR_IRQ_OPL, A
+        jp z, opl_isr
+        ret
 
 
 
@@ -173,12 +168,11 @@ endif
     push HL
 
     ; init interrupt handlers
-    im 2
-    ld A, high isrtable
-    ld I, A
+    ;  we use IM0~ the 19 clock cycle penalty for IM2 is way too heavy for disk access
+    im 0
     ; since the IVRs have no reset, we need to initialize them to some known
-    ;  state, in this case the catch routine
-    ld A, low isrtable_catch
+    ;  state, in this case a simple NOP
+    xor A
     out (IO_IVR_FDC), A
     out (IO_IVR_RTC), A
 
@@ -236,8 +230,10 @@ str_diskError:
 str_fdcError:
     db 'DISK CONTROLLER ERROR', $0A, $00
 
-str_extNotPresent:
-    db 'EXTENSION BOARD NOT PRESENT', $0A, $00
+str_noExtPresent:
+    db 'NO '
+str_extPresent:
+    db 'EXTENSION BOARD PRESENT', $0A, $00
 
 str_readingHex:
     db 'READING HEX...', $0A, $00
@@ -469,11 +465,14 @@ _ext_test_cl:
 fdc_dat_bps:
     db $03
 
-; Initializes the FDC to AT mode, setting data rate etc. Note that this will enable interrupts,
-;  as they are required for proper operation of the FDC
+
+
+; Initializes the FDC to AT mode, setting data rate etc.
+;  This will initialize the FDC-IVR to a NOP.
 fdc_init:
-    ; initialize interrupt vector for fdc
-    ld A, low isrtable_fdc
+    ; initialize IVR to a NOP since all routines just wait for
+    ;  IRQs using halt mode.
+    xor A
     out (IO_IVR_FDC), A
 
     ld HL, $0000
@@ -482,19 +481,21 @@ fdc_init:
 
 _fdc_reset:
     ; issue a soft reset to make sure FDC is in reset mode
-    in A, (IO_FDC_OPER)
-    ld B, A
     xor A
     out (IO_FDC_OPER), A
-    call fdc_delay
-    ; controller is now reset, restore original contents of OPR,
-    ;  thereby also initializing AT mode
-    ld A, B
+
+    ; once reset is finished, controller will interrupt
+    ei
+    hlt
+
+    ; controller is now reset
+    ;  write to OP once again, leaving /SRST high, to initialize AT mode
+    ld A, [1 << BIT_FDC_SOFT_RESET]
     out (IO_FDC_OPER), A
     
-    ; initalize data rate
-    ; 500K MFM @ 32MHz~ let's not go to fast. I'm easily scared by data rates
-    ld A, [1 << BIT_FDC_DATARATE0] 
+    ; initialize data rate
+    ; 125Kb/s @ FM for 16MHz default clock
+    ld A, [1 << BIT_FDC_DATARATE1] 
     out (IO_FDC_CONT), A
     
     ret
@@ -517,7 +518,8 @@ fdc_recalibrate:
     
     ; the FDC is stepping the drive now. we need to wait until stepping is finished
     ;  and head has has reached track 0.
-    call fdc_waitForExecEndIrq
+    ei
+    hlt
 
     ; stepping is finished.
     ; next, read SR0 to check if drive has successfully reached track 0
@@ -530,6 +532,7 @@ fdc_recalibrate:
     jp nz, setCarryReturn
     
     jp resetCarryReturn
+
 
 
 ; Sets drive parameters for the currently selected unit
@@ -630,19 +633,6 @@ fdc_preCommandCheck:
     jp fdc_preCommandCheck
 
 
-   
-; Waits for exec phase to end. Only to be used for commands
-;  that produce IRQs
-fdc_waitForExecEndIrq:
-    hlt
-    ; if we're still in exec mode, the interrupt that ended the halt was for byte
-    ;  transfer -> halt again. we're done otherwise
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp nz, fdc_waitForExecEndIrq
-    ret
-
-
 
 ; Waits until the FDC reports a Request For Master. After that, it checks the data direction
 ;  bit. If it is is set to "waiting for input" the carry flag is reset, if bit is set to "data available"
@@ -674,57 +664,49 @@ fdc_diskError:
     
 
 
-; Interrupt handler for floppy controller
-;  Handles data transfer between controller and memory
-;  ATTENTION: This ISR is probably way to slow to handle data transfers. See fdcPolling branch
-;   for possible alternative.
-fdc_isr:
-    exx
-    ex af, af'
-    ; interrupt from the fdc. check what to do:
-    ;  if we're still in exec mode, a data byte is available or expected.
-    ;  if not, exec mode has ended and the interrupt indicates a
-    ;  command has finished executing or something went wrong
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    jp z, _fdc_isr_commandFinished
+; Experimental half polling/half IRQ routine for read data transfer. Uses interrupts
+;  in mode 0 to wait for the FDC. Transfers data read from the FDC to the buffer pointed
+;  by (HL), growing upwards. Leaves interrupts disabled when finished.
+;  Trashes B,C,D. When finished, HL points to the location AFTER where the last byte was stored.
+fdc_rtranfer:
+    ; Since the FDC-IVR contains a NOP, we can use the HLT instruction in IM0 to wait for the IRQ
+    ;  without the cycle penalty of calling an ISR. When HLT is lifted, the CPU will execute a NOP
+    ;  for 6 cycles and then continue after the HLT. This is faster and more elegant than polling the MSR
+    di
+    ; TODO: maybe we should make sure no RTC interrupts can occur here
     
-    ; a data byte is available or expected
-    ld HL, (DAT_DISK_DATAPTR)
-    ld DE, (DAT_DISK_DATACOUNT)
-    call fdc_waitForRFM  ; RFM should already be set by now, but better be safe than sorry
-    jp c, _fdc_isr_dataToFDC
+    ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
+    ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
 
-    ; FDC has a byte to be stored in memory
-    in A, (IO_FDC_DATA)
-    ld (HL), A
-    jp _fdc_isr_dataTransferFinished
-
-_fdc_isr_dataToFDC:
-    ; FDC expects a data byte
-    ld A, (HL)
-    out (IO_FDC_DATA), A
-
-_fdc_isr_dataTransferFinished:
-    inc HL
-    ld (DAT_DISK_DATAPTR), HL
-    inc DE
-    ld (DAT_DISK_DATACOUNT), DE
-    jp _fdc_isr_end
-
-_fdc_isr_commandFinished:
-    ; execution phase has ended
-    ; NOTE:
-    ;  the datasheet is not clear on whether any read/write will reset IRQ or 
-    ;  a data register access specifically. If the latter is the case we have to
-    ;  somehow make the IRQ line come inactive here. Otherwise, do nothing and
-    ;  let the command routine handle everything as we issued multiple reads of MSR above
-
-_fdc_isr_end:
-    exx
-    ex af, af'
+_fdc_rtransfer_loop:
     ei
-    ret
+    hlt
+    ; HALT was lifted~ check for interrupt cause
+    in A, (IO_FDC_STAT)
+    and D  ; [1 << BIT_FDC_EXEC_MODE], use D as constant for speed
+    ret z  ; if not in exec mode anymore, we're done
+    ini
+    jp _fdc_rtransfer_loop
+
+
+
+; Same as routine above, but writes data read from buffer at (HL) to FDC instead.
+fdc_wtranfer:
+    di
+    ; TODO: maybe we should make sure no RTC interrupts can occur here
+    
+    ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
+    ld C, IO_FDC_DATA  ; IO port constant for outi instruction (again used for speed)
+
+_fdc_wtransfer_loop:
+    ei
+    hlt
+    ; HALT was lifted~ check for interrupt cause
+    in A, (IO_FDC_STAT)
+    and D  ; [1 << BIT_FDC_EXEC_MODE], use D as constant for speed
+    ret z  ; if not in exec mode anymore, we're done
+    outi
+    jp _fdc_wtransfer_loop
 
 
 
@@ -749,7 +731,7 @@ rtc_init:
     ld A, $01  ; disable RTC interrupt (mask bit = 1)
     out (IO_RTC_CE), A
 
-    ld A, low isrtable_rtc
+    ld A, $ff  ; rst 38h  
     out (IO_IVR_RTC), A
 
     ret
@@ -873,6 +855,24 @@ rtc_isr:
     ex af, af'
     ei
     ret
+
+
+
+;-------------------------- SOUND CHIP ACCESS ------------------------------- 
+
+; Initializes OPL sound chip. Does NOT initialize IVR since the IVR is primarily
+;  used by the RTC. Use RTC initialization routine to initialize IVR.
+opl_init:
+    ret
+
+
+
+; Interrupt service routine for the OPL timer interrupt
+opl_isr:
+    ; TODO: Clear OPL interrupt flag here
+    ei
+    ret
+
 
 
 ;---------------------- PARSER & FORMATTER METHODS --------------------------  
@@ -1309,14 +1309,25 @@ monitorStart:
     ;  extension devices if neccessary
     call ext_test
     jp nc, _monitor_init_noext
-    call rtc_init
     call fdc_init
+    call rtc_init
+    call opl_init
 _monitor_init_noext:
     
     call clearScreen
   
 monitor_welcome:
     ld HL, str_welcome ; print welcome message
+    call printString
+
+    ; check if extension board is present again and print message
+    call ext_test
+    jp nc, _monitor_welcomeExt_noext
+    ld HL, str_extPresent
+    jp _monitor_welcomeExt_end
+_monitor_welcomeExt_noext:
+    ld HL, str_noExtPresent
+_monitor_welcomeExt_end:
     call printString
     
 monitorPrompt_loop:
