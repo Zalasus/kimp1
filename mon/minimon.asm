@@ -814,9 +814,6 @@ rtc_delay:
 
     ld (DAT_RTC_COUNTER), A
 
-    ld A, low isrtable_rtc
-    out (IO_IVR_RTC), A
-
     ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
     out (IO_RTC_CE), A
 
@@ -1321,6 +1318,7 @@ monitor_welcome:
     call printString
 
     ; check if extension board is present again and print message
+    call printNewLine
     call ext_test
     jp nc, _monitor_welcomeExt_noext
     ld HL, str_extPresent
@@ -1664,7 +1662,7 @@ command_boot:
     jp c, _command_boot_cont
 
     ; board is not present. print error
-    ld HL, str_extNotPresent
+    ld HL, str_noExtPresent
     call printString
     jp monitorPrompt_loop
 
