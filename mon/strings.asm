@@ -63,7 +63,7 @@ str_help:
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
     db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
-    db 'f          Print flags and registers as returned by last call', $0A
+    db 'f[R=X]     Print or modify flag and register stash', $0A
     db 'c S, D, C  Copy C bytes from S to D', $0A
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A

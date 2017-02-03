@@ -69,6 +69,7 @@ MON_ANSWER:             equ '$'
 MON_ARGUMENT_SEPERATOR: equ ','
 MON_ADDRESS_SEPARATOR:  equ ':'
 
+MON_INPUT_BUFFER_SIZE:  equ $100
 
 UART_DIV_VAL:  equ (CPU_SPEED/CONF_UART_PRESCALE)/CONF_UART_BAUDRATE - 1
 if CONF_UART_PRESCALE == 1
@@ -80,24 +81,6 @@ endif
 if CONF_UART_PRESCALE == 64
     UART_MODE_INSTRUCTION: equ $4F  ; %01001111
 endif
-
-
-
-; --------------- DATA AREAS --------------------
-
-DAT_INPUT_BUFFER:          equ ROM_END ; command line input buffer in HIMEM
-DAT_INPUT_BUFFER_SIZE:     equ $100 ; 256 bytes
-DAT_MON_REG_BUFFER:        equ DAT_INPUT_BUFFER + DAT_INPUT_BUFFER_SIZE
-DAT_EXPR_WORDSTOR:         equ DAT_MON_REG_BUFFER + 16 ; single word storage for expression parser
-DAT_EXPR_ANSWER:           equ DAT_EXPR_WORDSTOR + 2 ; memory (word) for last parsed expression
-DAT_RTC_COUNTER:           equ DAT_EXPR_ANSWER + 2
-DAT_EXT_INITIALIZED:       equ DAT_RTC_COUNTER + 1
-DAT_DISK_IRQFLAG:          equ DAT_EXT_INITIALIZED + 1
-DAT_DISK_DATAPTR:          equ DAT_DISK_IRQFLAG + 1
-DAT_DISK_NUMBER:           equ DAT_DISK_DATAPTR + 2  ; number of currently selected drive
-DAT_DISK_TRACK:            equ DAT_DISK_NUMBER + 1
-DAT_DISK_SECTOR:           equ DAT_DISK_TRACK + 2
-DAT_DISK_DATABUFFER:       equ DAT_DISK_SECTOR + 2
 
 
 
@@ -656,8 +639,27 @@ stashRegisters:
     ld (DAT_MON_REG_BUFFER+14), A
     
     ret
-
     
+
+
+; Loads the stashed registers back into the register file (except SP. We don't want to force stack corruption)
+restoreRegisterStash:
+    ld A, (DAT_MON_REG_BUFFER+14)
+    ld I, A
+
+    ld HL, (DAT_MON_REG_BUFFER)
+    push HL
+    pop AF
+
+    ld BC, (DAT_MON_REG_BUFFER+2)
+    ld DE, (DAT_MON_REG_BUFFER+4)
+    ld HL, (DAT_MON_REG_BUFFER+6)
+    ld IX, (DAT_MON_REG_BUFFER+10)
+    ld IY, (DAT_MON_REG_BUFFER+12)
+
+    ret
+    
+
 
 ;------------------------- MAIN MONITOR LOOP --------------------------------     
    
@@ -843,8 +845,11 @@ _command_run_noskip:
     call expression
     jp c, monitor_syntaxError
 
-    ex DE, HL
-    jp (HL)
+    ; push target address. we will simulate indirect jump by using a return
+    ;  (can't use jp (HL) since we must restore register stash before jumping)
+    push DE
+    call restoreRegisterStash
+    ret ; bogus return to argument address
     
 _command_run_cleanup:
     ; we end up here when called routine returns
@@ -855,9 +860,19 @@ _command_run_cleanup:
 
 
 
-; Prints the saved register buffer in human readable format
+; Prints the saved register buffer in human readable format or
+;  modifies it.
 ;  NOTE: Quick and dirty routine. Surely to be compacted somehow.
 command_register:
+    call skipWhites
+    ld A, C
+    or A
+    jp z, _command_register_print
+
+    ; user supplied arguments -> modify stash
+    
+
+_command_register_print:
     ld IX, DAT_MON_REG_BUFFER
     
     ; F: NZ NC PO P
@@ -1067,24 +1082,9 @@ command_boot:
     jp monitorPrompt_loop
 
 _command_boot_cont:
-    ; set up controller
-    call fdc_specify
-    jp c, _command_boot_error
-
-    ld C, $00 ; Drive A
-    call fdc_selectDisk
-    
-    call fdc_recalibrate
-    jp c, _command_boot_error
-
-    ld BC, $0000
-    call fdc_setTrack
-    call fdc_setSector
-
-    ld BC, DAT_DISK_DATABUFFER
-    call fdc_setDataPointer
-
-    call fdc_readData
+    ld HL, str_notImplemented
+    call printString
+    jp monitorPrompt_loop
 
 _command_boot_error:
     ld HL, str_fdcError
@@ -1552,7 +1552,7 @@ _command_print_loop:
 command_disk:
     ld A, (DAT_EXT_INITIALIZED)
     or A
-    jp z, _command_disk_extNotInitialized
+    jp z, _command_disk_error_extNotInitialized
 
     call skipWhites
 
@@ -1569,46 +1569,78 @@ command_disk:
     cp 't'
     jp z, _command_disk_selTrack
 
+    cp 's'
+    jp z, _command_disk_selSector
+
     cp 'r'
     jp z, _command_disk_recalibrate
 
-    ld HL, str_notImplemented
-    call printString
-    jp monitorPrompt_loop
+    cp 'f'
+    jp z, _command_disk_format
+
+    jp monitor_syntaxError
 
 _command_disk_help:
     ld HL, str_disktoolHelp
     call printString
-    jp monitorPrompt_loop
+    jp monitorPrompt_loop ; ignore all other characters after help
 
 _command_disk_selDisk:
     call expression
     jp c, monitor_syntaxError
-    ld B, D
-    ld C, E
-    call fdc_selectDisk
-    jp monitorPrompt_loop
+    ld A, E
+    ld (DAT_DISK_NUMBER), A
+    call fdc_specify
+    jp c, _command_disk_error
+    call fdc_recalibrate
+    jp c, _command_disk_error
+    jp _command_disk_end
 
 _command_disk_selTrack:
     call expression
     jp c, monitor_syntaxError
-    ld B, D
-    ld C, E
-    call fdc_setTrack
-    jp c, _command_disk_diskError
-    jp monitorPrompt_loop
+    ld A, E
+    ld (DAT_DISK_TRACK), A
+    call fdc_seek
+    jp c, _command_disk_error
+    jp _command_disk_end
+
+_command_disk_selSector:
+    call expression
+    jp c, monitor_syntaxError
+    ld A, E
+    ld (DAT_DISK_SECTOR), A
+    jp _command_disk_end
 
 _command_disk_recalibrate:
     call fdc_recalibrate
-    jp c, _command_disk_diskError
+    jp c, _command_disk_error
+    jp _command_disk_end
+
+_command_disk_format:
+    call skipWhites
+    ld A, (HL)
+    cp 'a'
+    jp nz, _command_disk_format_notAll
+    inc HL
+    dec C
+    ; TODO: add code to format all tracks here
+_command_disk_format_notAll:
+    call fdc_format
+    jp c, _command_disk_error
+    jp _command_disk_end
+
+_command_disk_end:
+    ; would have looped here, but HL and C might have changed and
+    ;  i don't want to mess around with stashing them
     jp monitorPrompt_loop
 
-_command_disk_extNotInitialized:
+_command_disk_error_extNotInitialized:
     ld HL, str_noExtPresent
     call printString
     jp monitorPrompt_loop
 
-_command_disk_diskError:
+_command_disk_error:
     cp $01
     jp z, _command_disk_fdcError
     ld HL, str_diskError
@@ -1618,6 +1650,7 @@ _command_disk_fdcError:
     ld HL, str_fdcError
     call printString
     jp monitorPrompt_loop
+
 
 
 ; --------------------- MISC ROUTINES ----------------------
@@ -1692,6 +1725,29 @@ monitor_end:
     
     ; pad out file for maximum rom size
     dc [8192 - monitor_end], $ff
+
+
+
+; --------------- DATA AREAS --------------------
+
+    org ROM_END
+
+; Define data areas in RAM here
+
+DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
+DAT_MON_REG_BUFFER:        ds 16
+DAT_EXPR_WORDSTOR:         ds 2 ; single word storage for expression parser
+DAT_EXPR_ANSWER:           ds 2 ; memory (word) for last parsed expression
+DAT_RTC_COUNTER:           ds 1
+DAT_RTC_CALLBACK:          ds 2
+DAT_EXT_INITIALIZED:       ds 1
+DAT_DISK_MOTOR_DRIVE:      ds 1  ; bit 1 = motors were enabled, bit 0 = drive number
+DAT_DISK_DATAPTR:          ds 2
+DAT_DISK_NUMBER:           ds 1  ; number of currently selected drive
+DAT_DISK_TRACK:            ds 1
+DAT_DISK_SECTOR:           ds 1
+DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last
+
 
     end main
 

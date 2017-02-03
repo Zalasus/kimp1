@@ -8,8 +8,8 @@ fdc_dat_bps:
 
 
 
-; Initializes the FDC to AT mode, setting data rate etc.
-;  This will initialize the FDC-IVR to a NOP.
+; Initializes the FDC. This routine will soft reset the FDC, set
+;  data rate and place the FDC in AT mode. 
 fdc_init:
     ; initialize IVR to a NOP since all routines just wait for
     ;  IRQs using halt mode.
@@ -23,61 +23,87 @@ fdc_init:
     ld HL, DAT_DISK_DATABUFFER
     ld (DAT_DISK_DATAPTR), HL
 
-_fdc_reset:
-    ; issue a soft reset to make sure FDC is in reset mode
+    call fdc_reset
+
+    ; the soft reset will also have initialized AT mode
+
+    ; initialize data rate
+    ; 125Kb/s @ FM for 16MHz default clock
+    ld A, [1 << BIT_FDC_DATARATE1] 
+    out (IO_FDC_CONT), A
+
+    jp fdc_specify
+
+
+
+; Issues a soft reset to the FDC, thereby stopping any running commands.
+;  This will not affect the data rate setting or the mode, but when called
+;  on an FDC in hard reset mode, AT mode will be initialized.
+fdc_reset:
+    ; set all bits in operations register to 0,
+    ;  including the active low /SRST bit
     xor A
     out (IO_FDC_OPER), A
 
     ; once reset is finished, controller will interrupt
     ei
     hlt
+    ei
+
+    ; read MSR, hoping this will clear the IRQ line
+    in A, (IO_FDC_STAT)
 
     ; controller is now reset
-    ;  write to OP once again, leaving /SRST high, to initialize AT mode
-    ld A, [1 << BIT_FDC_SOFT_RESET]
+
+    ret
+
+
+
+; Enables motor of selected drive and waits the spinup time.
+;  If the right motor was already enabled, this method just returns.
+fdc_enableMotor:
+    ; just set drive select bit appropriately and enable both motors.
+    ;  only the selected drive should spin up
+    ld A, (DAT_DISK_NUMBER)
+    ld B, A
+    ld A, (DAT_DISK_MOTOR_DRIVE)
+    bit 1, A
+    jp z, _fdc_enableMotor_doStuff ; no motor was enabled yet. do it now
+    xor B
+    bit 0, A
+    jp z, _fdc_enableMotor_doStuff ; wrong drive was selected. need to spin up other motor
+    ; right motor was already on. we're done
+    ret
+    
+_fdc_enableMotor_doStuff:
+    ld A, B
+    and $01
+    or [1 << BIT_FDC_MOTOR_ENABLE_1] | [1 << BIT_FDC_MOTOR_ENABLE_2] | [1 << BIT_FDC_SOFT_RESET]
     out (IO_FDC_OPER), A
-    
-    ; initialize data rate
-    ; 125Kb/s @ FM for 16MHz default clock
-    ld A, [1 << BIT_FDC_DATARATE1] 
-    out (IO_FDC_CONT), A
-    
+
+    ; wait spinup time
+    ld A, 32
+    call rtc_delay  ; 32 ticks -> 500ms
+
+    ; store current motor state
+    ld A, $02
+    or B
+    ld (DAT_DISK_MOTOR_DRIVE), A
+
     ret
 
 
 
-; The following routines are provided as simple adapters for the CP/M CBIOS.
+; Disables motors of both drives
+fdc_disableMotor:
+    ld A, (DAT_DISK_NUMBER)
+    and $01
+    or [1 << BIT_FDC_SOFT_RESET]
+    out (IO_FDC_OPER), A
 
-; Sets the target track number to be accessed to the value in BC.
-;  Then, issues a seek command to move head to the selected track.
-;  As of now, this ignores B. Track number is one byte only.
-fdc_setTrack:
-    ld A, C
-    ld (DAT_DISK_TRACK), A
-    jp fdc_seek
-    
+    xor A
+    ld (DAT_DISK_MOTOR_DRIVE), A
 
-    
-; Sets the target sector number to be accessed to the value in BC.
-;  As of now, this ignores B. Sector number is one byte only.
-fdc_setSector:
-    ld A, C
-    ld (DAT_DISK_SECTOR), A
-    ret
-
-
-
-; Sets the address of the data buffer to the value in BC.
-fdc_setDataPointer:
-    ld (DAT_DISK_DATAPTR), BC
-    ret
-
-
-
-; Selects the disk given by C
-fdc_selectDisk:
-    ld A, C
-    ld (DAT_DISK_NUMBER), A
     ret
 
 
@@ -223,6 +249,12 @@ fdc_seek:
 ;  error occurs, carry wil be set and A contains $01 if the FDC was in an invalid
 ;  state or $03 if the FDC reported errors after executing the command.
 fdc_readData:
+    ; first, enable and spin up motors
+    call fdc_enableMotor
+    ld HL, fdc_disableMotor
+    ld A, 128  ; turn off motor after 2 seconds
+    call rtc_setTimeout
+
     call fdc_preCommandCheck
 
     ; read command (including MT,MF & SK bits)
@@ -235,7 +267,9 @@ fdc_readData:
 
     ; all command bytes transferred. controller will start reading now
     ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
+    call rtc_disableInterrupt ; make sure transfer is not interrupted
     call fdc_rTransfer
+    call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
     ; execution mode ended. let subroutine read result bytes and return
     jp fdc_rwCommandStatusCheck
@@ -249,6 +283,12 @@ fdc_readData:
 ;  state, $02 if the selected disk was write protected or $03 if the FDC reported
 ;  errors after executing the command.
 fdc_writeData:
+    ; first, enable and spin up motors
+    call fdc_enableMotor
+    ld HL, fdc_disableMotor
+    ld A, 128  ; turn off motor after 2 seconds
+    call rtc_setTimeout
+
     call fdc_preCommandCheck
 
     ; write command (including MT & MF bits)
@@ -261,7 +301,9 @@ fdc_writeData:
 
     ; controller starts writing now
     ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
+    call rtc_disableInterrupt ; make sure transfer is not interrupted
     call fdc_wTransfer
+    call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
     ; command execution finished. let helper routine read result bytes and set error codes
     jp fdc_rwCommandStatusCheck
@@ -271,6 +313,12 @@ fdc_writeData:
 ; Formats the currently selected track on the selected drive.
 ;  Error codes same as for write command.
 fdc_format:
+    ; first, enable and spin up motors
+    call fdc_enableMotor
+    ld HL, fdc_disableMotor
+    ld A, 128  ; turn off motor after 2 seconds
+    call rtc_setTimeout
+
     call fdc_preCommandCheck
 
     ; format track command (including MF bits)
@@ -313,7 +361,8 @@ fdc_format:
     out (IO_FDC_DATA), A
     
     ; command is running now. this will transfer no data, so we simply wait for the interrupt
-    ;  at the end of execution phase
+    ;  at the end of execution phase. Since this process is not time-critical and no two
+    ;  interrupts from different sources can be lost, we don't need to pause the motor-off timeout
     call fdc_waitForExecEndIrq
 
     ; let subroutine check result bytes and return
@@ -326,7 +375,7 @@ fdc_format:
 ;  command byte has to be issued to the FDC by the caller to differentiate between R/W.
 ;  This routine returns right before the caller should call the appropriate transfer
 ;  method. Error states are handled appropriately. If this routine returns with carry set,
-;  the calling routine may return immediatly and should not modify A to preserve the error code.
+;  the calling routine may return immediately and should not modify A to preserve the error code.
 fdc_rwCommand:
     ; unit & head address
     call fdc_waitForRFM
@@ -440,6 +489,7 @@ fdc_commandError_commandUnsuccessful:
 
 ; Checks MSR of FDC and returns if exec phase has ended. If not,
 ;  waits for an IRQ and loops, checking again and so forth.
+;  If waiting is neccessary, interupts will stay activated afterwards.
 fdc_waitForExecEndIrq:
     in A, (IO_FDC_STAT)
     bit BIT_FDC_EXEC_MODE, A
@@ -454,15 +504,15 @@ fdc_waitForExecEndIrq:
 
 ; Experimental half polling/half IRQ routine for read data transfer. Uses interrupts
 ;  in mode 0 to wait for the FDC. Transfers data read from the FDC to the buffer pointed
-;  by (HL), growing upwards. Leaves interrupts disabled when finished.
-;  Trashes B,C,D. When finished, HL points to the location AFTER where the last byte was stored.
+;  by (HL), growing upwards. Leaves interrupts disabled when finished since this routine
+;  is rather time critical and a conditional return saves a few cycles. Caller has to ei afterwards
+;  to comply with the interrupt usage rule. Trashes B,C,D. When finished, HL points to the location
+;  AFTER where the last byte was stored.
 fdc_rTransfer:
     ; Since the FDC-IVR contains a NOP, we can use the HLT instruction in IM0 to wait for the IRQ
     ;  without the cycle penalty of calling an ISR. When HLT is lifted, the CPU will execute a NOP
     ;  for 6 cycles and then continue after the HLT. This is faster and more elegant than polling the MSR
-    di
-    ; TODO: maybe we should make sure no RTC interrupts can occur here
-    
+     
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
 
@@ -480,9 +530,6 @@ _fdc_rTransfer_loop:
 
 ; Same as routine above, but writes data read from buffer at (HL) to FDC instead.
 fdc_wTransfer:
-    di
-    ; TODO: maybe we should make sure no RTC interrupts can occur here
-    
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for outi instruction (again used for speed)
 
@@ -513,55 +560,22 @@ fdc_emptyResultBuffer:
 
 
 
-; Selects and enables motor of drive specified by LSb of B and waits the appropriate delay for
-;  spinning up to speed. Disables motor of other drive. If B > 1, both motors are deactivated.
-;  There's no spindown time if both motors are deactivated.
-; TODO: Routine has errors. Rewrite pls. Also remember to store selected drive in data area
-fdc_driveSelect:
-    in A, (IO_FDC_OPER)
-    and ~[[1 << BIT_FDC_MOTOR_ON_ENABLE_1] | [1 << BIT_FDC_MOTOR_ON_ENABLE_2]] ; turn off both motor bits
-
-    ld A, B
-    and $fe
-    jp nz, _fdc_driveSelect_disableBoth ; B is > 1. we're done
-    
-    bit 0, B
-    jp nz, _fdc_driveSelect_drive2
-
-    set BIT_FDC_MOTOR_ON_ENABLE_1, A
-    res BIT_FDC_DRIVE_SELECT, A
-    jp _fdc_driveSelect_spinup
-
-_fdc_driveSelect_drive2:
-    set BIT_FDC_MOTOR_ON_ENABLE_2, A
-    set BIT_FDC_DRIVE_SELECT, A
-
-_fdc_driveSelect_spinup:
-    out (IO_FDC_OPER), A
-
-    ; recommended spinup time is 500ms, which equals 32 RTC delay cycles
-    ld A, 32
-    call rtc_delay
-
-    ret
-
-_fdc_driveSelect_disableBoth:
-    out (IO_FDC_OPER), A
-    ret
-
-
-
-; Checks initial condition for issuing commands to the FDC. Waits for 
-;  RQM signal and checks if DIO signal is set to "input".
-;  If not, this routine will reset the controller and try again. This will bring the 
-;  controller in the right state eventually or just hang forever.
-;  TODO: Might check for busy bit also
+; Checks initial condition for issuing commands to the FDC. If controller is busy,
+;  it will be reset. Then this routine waits for RQM signal and checks if DIO signal 
+;  is set to "input". If not, the controller will be reset and DIO checked again. 
+;  This will bring the controller in the right state eventually or just hang forever.
 fdc_preCommandCheck:
-    call fdc_waitForRFM
-    ret c  ; if carry set -> FDC awaits input. all ready
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_BUSY, A
+    jp z, _fdc_preCommandCheck_wait
+    call fdc_reset
 
-    call _fdc_reset
-    jp fdc_preCommandCheck
+_fdc_preCommandCheck_wait:
+    call fdc_waitForRFM
+    ret nc  ; if carry set -> FDC awaits input. all ready
+
+    call fdc_reset
+    jp _fdc_preCommandCheck_wait
 
 
 

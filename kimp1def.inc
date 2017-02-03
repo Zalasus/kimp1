@@ -100,8 +100,8 @@ BIT_FDC_POWERDOWN:         equ 0
 BIT_FDC_DRIVE_SELECT:      equ 0
 BIT_FDC_SOFT_RESET:        equ 2 ; active low
 BIT_FDC_DMA_ENABLE:        equ 3
-BIT_FDC_MOTOR_ON_ENABLE_1: equ 4
-BIT_FDC_MOTOR_ON_ENABLE_2: equ 5
+BIT_FDC_MOTOR_ENABLE_1:    equ 4
+BIT_FDC_MOTOR_ENABLE_2:    equ 5
 BIT_FDC_MODE_SELECT:       equ 7
 
 ; control register bits
@@ -152,11 +152,12 @@ IO_IVR_FDC:   equ $3C
 IO_IVR_RTC:   equ $3D
 IO_EBCR:      equ $3E
 
-BIT_EBCR_TEST:      equ 0
-BIT_EBCR_TC:        equ 2
-BIT_EBCR_IRQ_FDC:   equ 5  ; active high
-BIT_EBCR_IRQ_RTC:   equ 6  ; active low
-BIT_EBCR_IRQ_OPL:   equ 7  ; active low
+BIT_EBCR_TEST:            equ 0
+BIT_EBCR_TC:              equ 2
+BIT_EBCR_RTC_IRQ_INHIBIT: equ 4
+BIT_EBCR_IRQ_FDC:         equ 5  ; active high
+BIT_EBCR_IRQ_RTC:         equ 6  ; active low
+BIT_EBCR_IRQ_OPL:         equ 7  ; active low
 
 
 
