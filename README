@@ -1,0 +1,12 @@
+
+kimp1
+=====
+
+Software for my Z80 microcomputer kimp1. Includes generic libraries,
+an overengineered monitor program and CP/M stuff.
+
+All the assembly files are written for the zmac assembler, to be found
+here: http://members.shaw.ca/gp2000/zmac.html
+
+Most of this code was written by Zalasus (me). Feel free to use it as
+you please. Just don't go all Oracle on me.

@@ -14,7 +14,7 @@
 
     org $0000
 
-    include "../kimp1def.inc"
+    include ../kimp1def.inc
 
 
 
@@ -191,13 +191,13 @@ _soft_reset_loop:
     
 ;----------------------------STRING DATA-------------------------------
 
-    include "strings.asm"
+    include strings.asm
     
 
     
 ;-------------------------- CONSOLE IO --------------------------------
 
-    include "io_console.asm"
+    include io_console.asm
 
 
 
@@ -230,19 +230,19 @@ _ext_test_cl:
 
 ;----------------------------- DISK IO --------------------------------
 
-    include "io_fdc.asm"
+    include io_fdc.asm
 
 
 
 ;---------------------------- RTC ACCESS ------------------------------
 
-    include "io_rtc.asm"
+    include io_rtc.asm
 
 
 
 ;-------------------------- SOUND CHIP ACCESS -------------------------
 
-    include "io_opl.asm"
+    include io_opl.asm
 
 
 
