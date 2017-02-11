@@ -121,13 +121,11 @@ endif
         ; restart vector used by RTC IRQ
         ;  since the RTC-IVR is shared by both RTC and OPL, we need to
         ;  determine the exact cause for the interrupt here and jump to
-        ;  the right handler. RTC has priority over OPL
+        ;  the right handler. OPL has priority over RTC
         in A, (IO_EBCR)
-        bit BIT_EBCR_IRQ_RTC, A
-        jp z, rtc_isr
         bit BIT_EBCR_IRQ_OPL, A
         jp z, opl_isr
-        ret
+        jp rtc_isr
 
 
 
@@ -695,19 +693,26 @@ monitorStart:
     ld A, [(1 << BIT_UART_TXEN) | (1 << BIT_UART_RXEN) | (1 << BIT_UART_DTR)]
     out (IO_UART_COM), A
 
+
     ; IO-Devices are now initialized. Check if extension board is present and initialize
     ;  extension devices if neccessary
     xor A
     ld (DAT_EXT_INITIALIZED), A
+
     call ext_test
     jp nc, _monitor_init_noext
-    call fdc_init
+
+    ld HL, str_loading
+    call printString
+
     call rtc_init
     call opl_init
+    call fdc_init
     ld A, $ff
     ld (DAT_EXT_INITIALIZED), A
 _monitor_init_noext:
     
+
     call clearScreen
   
 monitor_welcome:
@@ -717,8 +722,8 @@ monitor_welcome:
     ; check if extension board was initialized and print message
     call printNewLine
     ld A, (DAT_EXT_INITIALIZED)
-    or A
-    jp z, _monitor_welcomeExt_noext
+    cp $ff
+    jp nz, _monitor_welcomeExt_noext
     ld HL, str_extPresent
     jp _monitor_welcomeExt_end
 _monitor_welcomeExt_noext:
@@ -1073,8 +1078,8 @@ _command_load_tapeLoop:
 command_boot:
     ; first, check if extension board is plugged in
     ld A, (DAT_EXT_INITIALIZED)
-    or A
-    jp nz, _command_boot_cont
+    cp $ff
+    jp z, _command_boot_cont
 
     ; board is not present (on startup). print error
     ld HL, str_noExtPresent
@@ -1551,8 +1556,8 @@ _command_print_loop:
 
 command_disk:
     ld A, (DAT_EXT_INITIALIZED)
-    or A
-    jp z, _command_disk_error_extNotInitialized
+    cp $ff
+    jp nz, _command_disk_error_extNotInitialized
 
     call skipWhites
 
@@ -1734,8 +1739,6 @@ monitor_end:
 
 ; Define data areas in RAM here
 
-DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
-DAT_MON_REG_BUFFER:        ds 16
 DAT_EXPR_WORDSTOR:         ds 2 ; single word storage for expression parser
 DAT_EXPR_ANSWER:           ds 2 ; memory (word) for last parsed expression
 DAT_RTC_COUNTER:           ds 1
@@ -1746,6 +1749,8 @@ DAT_DISK_DATAPTR:          ds 2
 DAT_DISK_NUMBER:           ds 1  ; number of currently selected drive
 DAT_DISK_TRACK:            ds 1
 DAT_DISK_SECTOR:           ds 1
+DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
+DAT_MON_REG_BUFFER:        ds 16
 DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last
 
 

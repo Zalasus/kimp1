@@ -153,10 +153,6 @@ IO_IVR_RTC:   equ $3D
 IO_EBCR:      equ $3E
 
 BIT_EBCR_TEST:            equ 0
-BIT_EBCR_TC:              equ 2
-BIT_EBCR_RTC_IRQ_INHIBIT: equ 4
-BIT_EBCR_IRQ_FDC:         equ 5  ; active high
-BIT_EBCR_IRQ_RTC:         equ 6  ; active low
 BIT_EBCR_IRQ_OPL:         equ 7  ; active low
 
 

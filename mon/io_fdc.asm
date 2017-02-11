@@ -130,7 +130,7 @@ fdc_specify:
 
     ; no exec or result phase
 
-    ret
+    jp resetCarryReturn
 
 
 
@@ -157,7 +157,7 @@ fdc_senseInterruptStatus:
     jp nc, setCarryReturn
     in A, (IO_FDC_DATA)
 
-    ret
+    jp resetCarryReturn
  
 
 
@@ -572,7 +572,7 @@ fdc_preCommandCheck:
 
 _fdc_preCommandCheck_wait:
     call fdc_waitForRFM
-    ret nc  ; if carry set -> FDC awaits input. all ready
+    ret nc  ; if carry reset -> FDC awaits input. all ready
 
     call fdc_reset
     jp _fdc_preCommandCheck_wait
@@ -588,8 +588,8 @@ fdc_waitForRFM:
     jp z, fdc_waitForRFM
 
     bit BIT_FDC_DATA_INPUT, A
-    jp nz, resetCarryReturn ; DIO = 1 -> data register expects to be read
-    jp setCarryReturn
+    jp nz, setCarryReturn ; DIO = 1 -> data register expects to be read
+    jp resetCarryReturn
 
 
 

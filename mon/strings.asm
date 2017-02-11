@@ -86,7 +86,7 @@ str_disktoolHelp:
     db 't T  Select track T', $0A
     db 's S  Select sector S', $0A
     db 'r    Recalibrate', $0A
-    db 'f[a] Format track, a for all tracks', $0A
+    db 'f[a] Format track, a for all tracks', $0A, $00
 
 endif
     
