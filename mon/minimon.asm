@@ -111,12 +111,14 @@ endif
 
 ; IM0 interrupt handlers here
 
+IVR_FDC_DEF:    equ $f7
+IVR_FDC_NOP:    equ $00
     org $0030   ; rst 30h  ($f7)
-        ; unused restart vector. simply return
-        ret
+        jp fdc_isr
 
 
 
+IVR_RTC:        equ $ff
     org $0038   ; rst 38h  ($ff)
         ; restart vector used by RTC IRQ
         ;  since the RTC-IVR is shared by both RTC and OPL, we need to
@@ -155,11 +157,11 @@ endif
     ; init interrupt handlers
     ;  we use IM0~ the 19 clock cycle penalty for IM2 is way too heavy for disk access
     im 0
-    ; since the IVRs have no reset, we need to initialize them to some known
-    ;  state, in this case a simple NOP
-    xor A
+    ld A, IVR_FDC_DEF
     out (IO_IVR_FDC), A
+    ld A, IVR_RTC
     out (IO_IVR_RTC), A
+    ei
 
 if CONF_RESET_ON_STARTUP == 0
     jp monitorStart ; skip soft reset and jump to monitor setup
@@ -1749,6 +1751,7 @@ DAT_DISK_DATAPTR:          ds 2
 DAT_DISK_NUMBER:           ds 1  ; number of currently selected drive
 DAT_DISK_TRACK:            ds 1
 DAT_DISK_SECTOR:           ds 1
+DAT_DISK_INT_SR0:          ds 1  ; sr0 as returned by last interrupt
 DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
 DAT_MON_REG_BUFFER:        ds 16
 DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last

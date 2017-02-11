@@ -11,9 +11,8 @@ fdc_dat_bps:
 ; Initializes the FDC. This routine will soft reset the FDC, set
 ;  data rate and place the FDC in AT mode. 
 fdc_init:
-    ; initialize IVR to a NOP since all routines just wait for
-    ;  IRQs using halt mode.
-    xor A
+    ; initialize IVR to the dedicated restart vector
+    ld A, IVR_FDC_DEF
     out (IO_IVR_FDC), A
     
     xor A
@@ -41,19 +40,20 @@ fdc_init:
 ;  on an FDC in hard reset mode, AT mode will be initialized.
 fdc_reset:
     ; set all bits in operations register to 0,
-    ;  including the active low /SRST bit
+    ;  including the active low /SRST bit.
+    ; once reset is finished, controller will interrupt
+    di
     xor A
     out (IO_FDC_OPER), A
-
-    ; once reset is finished, controller will interrupt
     ei
+
     hlt
-    ei
-
-    ; read MSR, hoping this will clear the IRQ line
-    in A, (IO_FDC_STAT)
 
     ; controller is now reset
+    ; ISR will have issued SENSEI command, which will reset the IRQ line
+    ;  make sure soft reset bit is high and mode bit 0 for AT mode
+    ld A, [1 << BIT_FDC_SOFT_RESET]
+    out (IO_FDC_OPER), A
 
     ret
 
@@ -135,10 +135,23 @@ fdc_specify:
 
 
 ; Loads status register 0 from controller. ST0 will be stored in B, the current cylinder
-;  index of the drive will be stored in A.
-;  Carry used as error bit.
+;  index of the drive will be stored in A. This routine will only execute when the controller
+;  is accepting commands. It will not perform resets and won't wait for RQM/DIO to assume the right
+;  state. If the SENSEI command can't be issued, this routine will return with carry set. Otherwise,
+;  carry will be reset.
 fdc_senseInterruptStatus:
-    call fdc_preCommandCheck
+    ; we can't make a pre-command check here since a reset would cause
+    ;  an interrupt, which would then cause the ISR to issue another SENSEI
+    ;  command and so on, never finishing since the SENSEI routine hangs during the preCheck
+    ;  reset and never issues the actual command that resets the IRQ line.
+    ; instead, make a check that won't trigger a reset
+    in A, (IO_FDC_STAT)
+    bit BIT_FDC_BUSY, A
+    jp z, setCarryReturn
+    bit BIT_FDC_REQUEST_FOR_MASTER, A
+    jp z, setCarryReturn
+    bit BIT_FDC_DATA_INPUT
+    jp nz, setCarryReturn
 
     ; sense interrupt status command
     ld A, $08
@@ -185,11 +198,8 @@ fdc_recalibrate:
 
     ; stepping is finished. no result phase.
 
-    ; FDC requires us to issue a Sense Interrupt Status command now, or
-    ;  the next command will be reported as invalid. Use result bytes to
-    ;  verify that stepping was successful
-    call fdc_senseInterruptStatus
-    jp c, fdc_commandError_invalidState
+    ; load interrupt status byte as received by ISR
+    ld A, (DAT_DISK_INT_SR0)
     bit BIT_FDC_SEEK_END, B
     jp z, fdc_commandError_commandUnsuccessful
     bit BIT_FDC_EQUIPMENT_CHECK, B
@@ -228,11 +238,8 @@ fdc_seek:
 
     ; no result phase.
 
-    ; FDC requires us to issue a Sense Interrupt Status command now, or
-    ;  the next command will be reported as invalid. Use result bytes to
-    ;  verify that stepping was successful
-    call fdc_senseInterruptStatus
-    jp c, fdc_commandError_invalidState
+    ; load interrupt status byte as received by ISR
+    ld A, (DAT_DISK_INT_SR0)
     bit BIT_FDC_SEEK_END, B
     jp z, fdc_commandError_commandUnsuccessful
     bit BIT_FDC_EQUIPMENT_CHECK, B
@@ -241,6 +248,12 @@ fdc_seek:
     xor A
     jp resetCarryReturn
 
+
+
+fdfdfdf
+; Big problem: all commands with result bytes can't use the isr since it does not read from the data reg,
+;  therefore not clearing the irq line. but once isr returns, interrupt will be reeanbled, triggering the isr
+;  once again. need to find a way to handle error codes etc. while still correctly switching between interrupt modes
 
 
 ; Reads data from the selected drive. Uses the parameters (track, sector, target
@@ -266,8 +279,8 @@ fdc_readData:
     ret c
 
     ; all command bytes transferred. controller will start reading now
-    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call rtc_disableInterrupt ; make sure transfer is not interrupted
+    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call fdc_rTransfer
     call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
@@ -297,11 +310,11 @@ fdc_writeData:
 
     ; rest of command is handled by common routine
     call fdc_rwCommand
-    ret c
+    jp c, fdc_selectDefaultInterrupt
 
     ; controller starts writing now
-    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call rtc_disableInterrupt ; make sure transfer is not interrupted
+    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call fdc_wTransfer
     call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
@@ -365,7 +378,7 @@ fdc_format:
     ;  interrupts from different sources can be lost, we don't need to pause the motor-off timeout
     call fdc_waitForExecEndIrq
 
-    ; let subroutine check result bytes and return
+    ; let subroutine check result bytes
     jp fdc_rwCommandStatusCheck
 
 
@@ -470,26 +483,46 @@ fdc_rwCommandStatusCheck:
 
 
 fdc_commandError_invalidState:
-    ld A, $01
     ; this error is probably urecoverable. no use in emptying the data
     ;  buffer. let a reset handle this if neccessary
+    ld A, $01
     jp setCarryReturn     
    
 fdc_commandError_writeProtected:
-    ld A, $02
     call fdc_emptyResultBuffer
+    ld A, $02
     jp setCarryReturn
 
 fdc_commandError_commandUnsuccessful:
-    ld A, $03
     call fdc_emptyResultBuffer
+    ld A, $03
     jp setCarryReturn
 
+
+
+fdc_selectDefaultInterrupt:
+    ld B, A  ; save error code
+    ld A, IVR_FDC_DEF
+    out (IO_IVR_FDC), A
+    ld A, B
+    ei
+    ret
+
+
+
+fdc_selectNopInterrupt:
+    ld A, IVR_FDC_NOP
+    out (IO_IVR_FDC), A
+    ei
+    ret
 
 
 ; Checks MSR of FDC and returns if exec phase has ended. If not,
 ;  waits for an IRQ and loops, checking again and so forth.
-;  If waiting is neccessary, interupts will stay activated afterwards.
+;  Will leave interrupts in the enable state that they would have
+;  been if a simple hlt had been executed instead of this routine.
+;  If the interrupt calls an ISR that reactivates interrupts, interrupts
+;  will be active when this returns.
 fdc_waitForExecEndIrq:
     in A, (IO_FDC_STAT)
     bit BIT_FDC_EXEC_MODE, A
@@ -497,25 +530,37 @@ fdc_waitForExecEndIrq:
 
     ei
     hlt
-    
+
     jp fdc_waitForExecEndIrq
 
 
 
 ; Experimental half polling/half IRQ routine for read data transfer. Uses interrupts
 ;  in mode 0 to wait for the FDC. Transfers data read from the FDC to the buffer pointed
-;  by (HL), growing upwards. Leaves interrupts disabled when finished since this routine
-;  is rather time critical and a conditional return saves a few cycles. Caller has to ei afterwards
-;  to comply with the interrupt usage rule. Trashes B,C,D. When finished, HL points to the location
-;  AFTER where the last byte was stored.
+;  by (HL), growing upwards. There is no bounds checking. Transfer ends when controller ends it.
+;  Trashes B,C,D. When finished, HL points to the location AFTER where the last byte was stored. 
+;  Since this routine has some overhead before actually able to react to IRQs, the controller may 
+;  be overrun when it locks the PLL and finds the start sector faster than this routine can enter
+;  it's transfer loop. This, however, seems unlikely to happen in practice.
 fdc_rTransfer:
-    ; Since the FDC-IVR contains a NOP, we can use the HLT instruction in IM0 to wait for the IRQ
+    ; Initialize IVR to a NOP so we can use the HLT instruction in IM0 to wait for the IRQ
     ;  without the cycle penalty of calling an ISR. When HLT is lifted, the CPU will execute a NOP
     ;  for 6 cycles and then continue after the HLT. This is faster and more elegant than polling the MSR
-     
+    ld A, IVR_FDC_NOP
+    out (IO_IVR_FDC), A     
+
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
 
+    call _fdc_rTransfer_loop ; call loop instead of jumping to it. a conditional return is faster than a branch
+
+    ; restore original IVR contents
+    ld A, IVR_FDC_DEF
+    out (IO_IVR_FDC), A
+    ei
+    ret
+
+; time critical part begins here
 _fdc_rTransfer_loop:
     ei
     hlt
@@ -528,11 +573,24 @@ _fdc_rTransfer_loop:
 
 
 
-; Same as routine above, but writes data read from buffer at (HL) to FDC instead.
+; Initiates an IRQ-driven data transfer to the FDC from the location pointed to by (HL).
+;  Same details apply as to read routine above.
 fdc_wTransfer:
+    ; initialize IVR to alternative NOP since we want to save cycles
+    ld A, IVR_FDC_NOP
+    out (IO_IVR_FDC), A
+
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for outi instruction (again used for speed)
 
+    call _fdc_wTransfer_loop
+
+    ld A, IVR_FDC_DEF
+    out (IO_IVR_FDC), A
+    ei
+    ret
+
+; time critical part begins here
 _fdc_wTransfer_loop:
     ei
     hlt
@@ -593,6 +651,30 @@ fdc_waitForRFM:
 
 
 
+; Interrupt handler for floppy controller. This is normally used when controller is idling or
+;  for seek/recalibrate commands. During read/write operations and other commands with
+;  result phase the IVR is temporarily overwritten with a NOP and this routine is not used.
+fdc_isr:
+    ex AF, AF'
+    exx
+    
+    ; check for interrupt cause (this hopefully resets the IRQ line)
+    ;  this won't execute if controller does not accept commands, so we are safe in case
+    ;  the interrupt came from a command with result phase (format, scan, read ID), although
+    ;  such a case should never occur
+    call fdc_senseInterruptStatus
+    jp c, _fdc_isr_end  ; sensei could not execute -> don't touch result byte
+    ld A, B
+    ld (DAT_DISK_INT_SR0), A
+    
+_fdc_isr_end:
+    exx
+    ex AF, AF'
+    ei
+    ret
+
+
+
 ; Waits for approximately 15us
 ;  (recommended but not required before reading MSR in command phase~
 ;   we use polling instead. might remove routine if no other useful application is found)
@@ -604,3 +686,8 @@ _fdc_delay_loop:
     jp nz, _fdc_delay_loop
 
     ret
+
+
+
+
+

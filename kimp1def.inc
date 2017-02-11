@@ -116,7 +116,7 @@ BIT_FDC_HEAD_SELECT:       equ 2
 BIT_FDC_NOT_READY:         equ 3 ; always 0
 BIT_FDC_EQUIPMENT_CHECK:   equ 4
 BIT_FDC_SEEK_END:          equ 5
-BIT_FDC_INTERRUPT_CODE0:   equ 6
+BIT_FDC_INTERRUPT_CODE0:   equ 6 ; 11******=ready line, 00=normal termination, 01=abnormal, 10=invalid command
 BIT_FDC_INTERRUPT_CODE1:   equ 7
 
 ; status register 1 bits
