@@ -99,7 +99,7 @@ BIT_FDC_POWERDOWN:         equ 0
 ; operation register bits
 BIT_FDC_DRIVE_SELECT:      equ 0
 BIT_FDC_SOFT_RESET:        equ 2 ; active low
-BIT_FDC_DMA_ENABLE:        equ 3
+BIT_FDC_DMA_ENABLE:        equ 3 ; NOTE: this appears to enable the DMA & IRQ _pins_, not decide between DMA/IRQ mode
 BIT_FDC_MOTOR_ENABLE_1:    equ 4
 BIT_FDC_MOTOR_ENABLE_2:    equ 5
 BIT_FDC_MODE_SELECT:       equ 7

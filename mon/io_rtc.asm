@@ -4,10 +4,14 @@
 
 ; Initializes the RTC, including the IVR etc.
 rtc_init:
-    ld A, $01  ; disable RTC interrupt (mask bit = 1)
+    ld A, $03  ; disable RTC interrupt (mask bit = 1, int mode)
     out (IO_RTC_CE), A
+    xor A      ; make sure irq line is deactivated
+    out (IO_RTC_CD), A 
+    ld A, [1 << BIT_RTC_24_12]  ; disable TEST bit and select 24h mode
+    out (IO_RTC_CF), A
 
-    ld A, $ff  ; rst 38h  
+    ld A, IVR_RTC
     out (IO_IVR_RTC), A
 
     ; reset counter and callback
@@ -91,10 +95,20 @@ _rtc_printTime_done:
 
 ; Uses the RTC interrupt to delay a time interval given by A. The delay time
 ;  equals A*1/64 seconds +/- a few clock cycles. Will enable interrupts.
-;  Due to the nature of the RTC interrupt, the first of the counted intervals
-;  can be anything from 0 to 1/64 seconds.
+;  Trashes HL.
 rtc_delay:
+    di
+
     ld (DAT_RTC_COUNTER), A
+    ld HL, $0000
+    ld (DAT_RTC_CALLBACK), HL
+
+    ; reset internal second counter
+    ld A, [1 << BIT_RTC_24_12] | [1 << BIT_RTC_REST]
+    out (IO_RTC_CF), A
+    nop
+    ld A, [1 << BIT_RTC_24_12]
+    out (IO_RTC_CF), A
 
     ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
     out (IO_RTC_CE), A
@@ -105,7 +119,7 @@ _rtc_delay_loop:
     or A
     jp nz, _rtc_delay_loop
     
-    ld A, $01  ; mask bit = 1
+    ld A, $03  ; mask bit = 1, int mode
     out (IO_RTC_CE), A
 
     ret
@@ -115,18 +129,21 @@ _rtc_delay_loop:
 ; Sets up the RTC to wait for a time given by A as a number
 ;  of 1/64 second intervals, stores the address in DE, then returns.
 ;  Once the set time has passed, a call to the stored address is made
-;  and the timer is deactivated. Will activate interrupts.
-;  Due to the nature of the RTC interrupt, the first of the counted intervals
-;  can be anything from 0 to 1/64 seconds.
+;  and the timer is deactivated. Will enable interrupts.
 ;  If this is called when another timeout is already pending, the old one will be
-;  ignored and the callback never made.
+;  ignored and that callback never made.
 rtc_setTimeout:
-    ld (DAT_RTC_COUNTER), A
-    
-    ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
-    out (IO_RTC_CE), A
+    di
 
+    ld (DAT_RTC_COUNTER), A
     ld (DAT_RTC_CALLBACK), DE
+    
+    ; reset internal second counter
+    ld A, [1 << BIT_RTC_24_12] | [1 << BIT_RTC_REST]
+    out (IO_RTC_CF), A
+    nop
+    ld A, [1 << BIT_RTC_24_12]
+    out (IO_RTC_CF), A
 
     ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
     out (IO_RTC_CE), A
@@ -140,8 +157,7 @@ rtc_setTimeout:
 ; Disables the RTC interrupt and resets the interval counter
 ;  and callback address
 rtc_deleteTimeout:
-    ld A, $01  ; mask bit = 1
-    out (IO_RTC_CE), A
+    call rtc_disableInterrupt
 
     ; reset counter and callback
     ld HL, $0000
@@ -156,8 +172,10 @@ rtc_deleteTimeout:
 ; Disables RTC interrupts but will not delete a pending timeout.
 ;  Won't affect the CPU interrupt settings
 rtc_disableInterrupt:
-    ld A, $01  ; mask bit = 1
+    ld A, $03  ; mask bit = 1, int mode
     out (IO_RTC_CE), A
+    xor A      ; make sure irq line is deactivated
+    out (IO_RTC_CD), A 
     ret
     
 
@@ -176,8 +194,7 @@ rtc_isr:
     ex af,af'
 
     ; clear the irq flag
-    in A, (IO_RTC_CD)
-    and ~[1 << BIT_RTC_IRQ_FLAG]
+    xor A
     out (IO_RTC_CD), A
     
     ld A, (DAT_RTC_COUNTER)
@@ -189,16 +206,16 @@ rtc_isr:
     ld HL, (DAT_RTC_CALLBACK)
     ld A, H
     or L
-    jp z, _rtc_isr_end  ; no callback
+    jp z, _rtc_isr_callback_end  ; no need to call back once counter hit zero
     
     ; make a call to callback
-    ld DE, _rtc_isr_callback_end
-    push DE
-    jp (HL)
+    ;ld DE, _rtc_isr_callback_end
+    ;push DE
+    ;jp (HL)
 _rtc_isr_callback_end:
-    call rtc_deleteTimeout    
+    ;call rtc_deleteTimeout
 
-_rtc_isr_end:   
+_rtc_isr_end:
     exx
     ex af, af'
     ei
@@ -206,6 +223,10 @@ _rtc_isr_end:
 
 
     
+rtc_delayTest:
+    ld A, 3
+    call rtc_delay
+    ret
 
 
 

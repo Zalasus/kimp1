@@ -1,0 +1,923 @@
+   1:				
+   2:				
+   3:     -	0000          	    org $0000
+   4:				
+   5:				
+   6:				    include ../../kimp1def.inc
+**** ../../kimp1def.inc ****
+   1:				
+   2:				;-----------------------------------
+   3:				;           Defition file
+   4:				;       for the KIMP1 system
+   5:				;
+   6:				;      Copyleft 2016  Zalasus
+   7:				;-----------------------------------
+   8:				
+   9:				
+  10:     -	8000          	CPU_SPEED: equ 2457600 ; 2.4576 MHz default clock
+  11:				
+  12:     -	2000          	ROM_END:   equ $2000 ; adress of first byte NOT in ROM anymore
+  13:     -	FFFF          	RAM_END:   equ $FFFF ; last byte in RAM
+  14:				
+  15:				
+  16:				
+  17:				;=============== CPU BOARD HARDWARE =================
+  18:				
+  19:				;-------------82C51 USART-------------
+  20:     -	0000          	IO_UART_DAT: equ $00 ; UART Data Register
+  21:     -	0001          	IO_UART_COM: equ $01 ; UART Command/Mode register
+  22:				
+  23:				; command register bits
+  24:     -	0000          	BIT_UART_TXEN:        equ 0 
+  25:     -	0001          	BIT_UART_DTR:         equ 1 ; 1=pin low, tied to status LED (1=led off)
+  26:     -	0002          	BIT_UART_RXEN:        equ 2
+  27:     -	0003          	BIT_UART_SEND_BREAK:  equ 3
+  28:     -	0004          	BIT_UART_RESET_ERROR: equ 4
+  29:     -	0005          	BIT_UART_RTS:         equ 5 ; 1=output low
+  30:     -	0006          	BIT_UART_INT_RESET:   equ 6
+  31:     -	0007          	BIT_UART_HUNT_MODE:   equ 7 ; unused in async mode
+  32:				
+  33:				; status register bits
+  34:     -	0000          	BIT_UART_TXRDY:       equ 0
+  35:     -	0001          	BIT_UART_RXRDY:       equ 1
+  36:     -	0002          	BIT_UART_TXEMPTY:     equ 2
+  37:     -	0003          	BIT_UART_PARITY_ERR:  equ 3
+  38:     -	0004          	BIT_UART_OVERRUN_ERR: equ 4
+  39:     -	0005          	BIT_UART_FRAMING_ERR: equ 5
+  40:     -	0006          	BIT_UART_SYNDET:      equ 6
+  41:     -	0007          	BIT_UART_DSR:         equ 7 ;1=pin low, tied to button (1=button pressed)
+  42:				
+  43:				
+  44:				
+  45:				;-------------82C53 PIT-------------
+  46:     -	0010          	IO_PIT_C0:   equ $10 ; PIT Timer Register 0
+  47:     -	0011          	IO_PIT_C1:   equ $11 ; PIT Timer Register 1
+  48:     -	0012          	IO_PIT_C2:   equ $12 ; PIT Timer Register 2
+  49:     -	0013          	IO_PIT_CTRL: equ $13 ; PIT Control Register (write only)
+  50:				
+  51:				
+  52:				
+  53:				;-------------Tape Counter Control Register-------------
+  54:     -	0020          	IO_TCCR:             equ $20
+  55:				
+  56:     -	0000          	BIT_TCCR_ROM_GATE:        equ 0
+  57:     -	0001          	BIT_TCCR_IO_RESET:        equ 1 ; write only
+  58:     -	0001          	BIT_TCCR_TAPE_SENSE:      equ 1 ; read only
+  59:     -	0002          	BIT_TCCR_C0_GATE:         equ 2
+  60:     -	0003          	BIT_TCCR_C1_GATE:         equ 3
+  61:     -	0004          	BIT_TCCR_C2_GATE:         equ 4
+  62:     -	0005          	BIT_TCCR_C1_INT_ENABLE:   equ 5
+  63:     -	0006          	BIT_TCCR_TAPE_MOTOR:      equ 6 ; write only
+  64:     -	0006          	BIT_TCCR_C0_OUT:          equ 6 ; read only
+  65:     -	0007          	BIT_TCCR_TAPE_DATA_WRITE: equ 7 ; write only
+  66:     -	0007          	BIT_TCCR_TAPE_DATA_READ:  equ 7 ; read only
+  67:				; 0 in this mask means the respective bit is not the same meaning when reading 
+  68:				;  from than when writing to TCCR
+  69:     -	003D          	IO_TCCR_WRITE_MASK:  equ $3D
+  70:				
+  71:				
+  72:				
+  73:				
+  74:				;=============== EXTENSION BOARD HARDWARE =================
+  75:				
+  76:				;-------------WD37C65 FLOPPY CONTROLLER-------------
+  77:     -	0030          	IO_FDC_STAT: equ $30
+  78:     -	0031          	IO_FDC_DATA: equ $31
+  79:     -	0034          	IO_FDC_OPER: equ $34
+  80:     -	0038          	IO_FDC_CONT: equ $38 ; write only
+  81:				
+  82:				; Note: The register descriptions in the crap datasheet of the WD37C65 were
+  83:				;  mostly incorrect. These bit assignments were obtained by comparing the WD37C65
+  84:				;  datasheet with the (mostly) compatible NEC uPD765 and are assumed to be correct
+  85:				
+  86:				; master status register bits
+  87:     -	0000          	BIT_FDC_FDD0_BUSY:          equ 0
+  88:     -	0001          	BIT_FDC_FDD1_BUSY:          equ 1
+  89:     -	0002          	BIT_FDC_FDD2_BUSY:          equ 2
+  90:     -	0003          	BIT_FDC_FDD3_BUSY:          equ 3
+  91:     -	0004          	BIT_FDC_BUSY:               equ 4
+  92:     -	0005          	BIT_FDC_EXEC_MODE:          equ 5
+  93:     -	0006          	BIT_FDC_DATA_INPUT:         equ 6
+  94:     -	0007          	BIT_FDC_REQUEST_FOR_MASTER: equ 7
+  95:				
+  96:				; master status register 1
+  97:     -	0000          	BIT_FDC_POWERDOWN:         equ 0
+  98:				
+  99:				; operation register bits
+ 100:     -	0000          	BIT_FDC_DRIVE_SELECT:      equ 0
+ 101:     -	0002          	BIT_FDC_SOFT_RESET:        equ 2 ; active low
+ 102:     -	0003          	BIT_FDC_DMA_ENABLE:        equ 3
+ 103:     -	0004          	BIT_FDC_MOTOR_ENABLE_1:    equ 4
+ 104:     -	0005          	BIT_FDC_MOTOR_ENABLE_2:    equ 5
+ 105:     -	0007          	BIT_FDC_MODE_SELECT:       equ 7
+ 106:				
+ 107:				; control register bits
+ 108:     -	0000          	BIT_FDC_DATARATE0:       equ 0
+ 109:     -	0001          	BIT_FDC_DATARATE1:       equ 1
+ 110:     -	0002          	BIT_FDC_DISABLE_PRECOMP: equ 2
+ 111:				
+ 112:				; status register 0 bits
+ 113:     -	0000          	BIT_FDC_SR0_UNIT_SELECT_0: equ 0
+ 114:     -	0001          	BIT_FDC_SR0_UNIT_SELECT_1: equ 1
+ 115:     -	0002          	BIT_FDC_HEAD_SELECT:       equ 2
+ 116:     -	0003          	BIT_FDC_NOT_READY:         equ 3 ; always 0
+ 117:     -	0004          	BIT_FDC_EQUIPMENT_CHECK:   equ 4
+ 118:     -	0005          	BIT_FDC_SEEK_END:          equ 5
+ 119:     -	0006          	BIT_FDC_INTERRUPT_CODE0:   equ 6 ; 11******=ready line, 00=normal termination, 01=abnormal, 10=invalid command
+ 120:     -	0007          	BIT_FDC_INTERRUPT_CODE1:   equ 7
+ 121:				
+ 122:				; status register 1 bits
+ 123:     -	0000          	BIT_FDC_MISSING_ADRESS_MARK: equ 0
+ 124:     -	0001          	BIT_FDC_NOT_WRITEABLE:       equ 1
+ 125:     -	0002          	BIT_FDC_NO_DATA:             equ 2
+ 126:     -	0004          	BIT_FDC_OVERRUN:             equ 4
+ 127:     -	0005          	BIT_FDC_DATA_ERROR:          equ 5
+ 128:     -	0007          	BIT_FDC_END_OF_CYLINDER:     equ 7
+ 129:				
+ 130:				; status register 2 bits
+ 131:     -	0000          	BIT_FDC_MISSING_ADRESS_MARK_IN_DATA_FIELD: equ 0
+ 132:     -	0001          	BIT_FDC_BAD_CYLINDER:                      equ 1
+ 133:     -	0002          	BIT_FDC_SCAN_NOT:                          equ 2
+ 134:     -	0003          	BIT_FDC_SCAN_EQUAL:                        equ 3
+ 135:     -	0004          	BIT_FDC_WRONG_CYLINDER:                    equ 4
+ 136:     -	0005          	BIT_FDC_SR3_DATA_ERROR:                    equ 5
+ 137:     -	0006          	BIT_FDC_CONTROL_MARK:                      equ 6
+ 138:				
+ 139:				; status register 3 bits
+ 140:     -	0000          	BIT_FDC_UNIT_SELECT_0:          equ 0
+ 141:     -	0001          	BIT_FDC_UNIT_SELECT_1:          equ 1
+ 142:     -	0002          	BIT_FDC_HEAD_SELECT:            equ 2
+ 143:     -	0003          	BIT_FDC_WRITE_PROTECTED:        equ 3 ; active low
+ 144:     -	0004          	BIT_FDC_TRACK_0:                equ 4
+ 145:     -	0005          	BIT_FDC_READY:                  equ 5 ; always 1
+ 146:     -	0006          	BIT_FDC_WRITE_PROTECTED_LEGACY: equ 6 ; active low
+ 147:				
+ 148:				
+ 149:				
+ 150:				;---------------Control Registers--------------
+ 151:     -	003C          	IO_IVR_FDC:   equ $3C
+ 152:     -	003D          	IO_IVR_RTC:   equ $3D
+ 153:     -	003E          	IO_EBCR:      equ $3E
+ 154:				
+ 155:     -	0000          	BIT_EBCR_TEST:            equ 0
+ 156:     -	0007          	BIT_EBCR_IRQ_OPL:         equ 7  ; active low
+ 157:				
+ 158:				
+ 159:				
+ 160:				;--------------------MSM6242B RTC----------------------
+ 161:				; NOTE: This is a 4-bit device. When reading registers, the upper
+ 162:				;  nibble of the databus is undefined
+ 163:     -	0040          	IO_RTC_S1:       equ $40
+ 164:     -	0041          	IO_RTC_S10:      equ $41
+ 165:     -	0042          	IO_RTC_MI1:      equ $42
+ 166:     -	0043          	IO_RTC_MI10:     equ $43
+ 167:     -	0044          	IO_RTC_H1:       equ $44
+ 168:     -	0045          	IO_RTC_H10:      equ $45 ; NOTE: Bits 0-1: hour, Bit 2: PM/AM, Bit 3: 0
+ 169:     -	0046          	IO_RTC_D1:       equ $46
+ 170:     -	0047          	IO_RTC_D10:      equ $47
+ 171:     -	0048          	IO_RTC_MO1:      equ $48
+ 172:     -	0049          	IO_RTC_MO10:     equ $49
+ 173:     -	004A          	IO_RTC_Y1:       equ $4A
+ 174:     -	004B          	IO_RTC_Y10:      equ $4B
+ 175:     -	004C          	IO_RTC_W:        equ $4C
+ 176:     -	004D          	IO_RTC_CD:       equ $4D
+ 177:     -	004E          	IO_RTC_CE:       equ $4E
+ 178:     -	004F          	IO_RTC_CF:       equ $4F
+ 179:				
+ 180:				; H10 bits
+ 181:     -	0002          	BIT_RTC_PM_AM:      equ 2 ; 0=AM,  1=PM
+ 182:				
+ 183:				; CD bits
+ 184:     -	0000          	BIT_RTC_HOLD:       equ 0
+ 185:     -	0001          	BIT_RTC_BUSY:       equ 1 ; read-only
+ 186:     -	0002          	BIT_RTC_IRQ_FLAG:   equ 2 ; write 0 to reset, write 1 to leave unaffected
+ 187:     -	0003          	BIT_RTC_30_SEC_ADJ: equ 3
+ 188:				
+ 189:				; CE bits
+ 190:     -	0000          	BIT_RTC_MASK:       equ 0
+ 191:     -	0001          	BIT_RTC_ITRPT_STND: equ 1 ; 0=7.8125ms pulse,  1=as long as irq is set
+ 192:     -	0002          	BIT_RTC_T0:         equ 2
+ 193:     -	0003          	BIT_RTC_T1:         equ 3
+ 194:				
+ 195:				; CF bits
+ 196:     -	0000          	BIT_RTC_REST:       equ 0
+ 197:     -	0001          	BIT_RTC_STOP:       equ 1
+ 198:     -	0002          	BIT_RTC_24_12:      equ 2 ; 0=12h-mode,  1=24h-mode
+ 199:     -	0003          	BIT_RTC_TEST:       equ 3
+ 200:				
+ 201:				
+ 202:				
+ 203:				
+ 204:				
+ 205:				
+**** iomon.asm ****
+   7:				
+   8:				
+   9:				
+  10:				; terminal characters
+  11:     -	000A          	TERM_LF:     equ $0A ; linefeed
+  12:     -	000D          	TERM_CR:     equ $0D ; carriage return
+  13:     -	0008          	TERM_BS:     equ $08 ; backspace (used to move cursor left one char)
+  14:     -	007F          	TERM_DEL:    equ $7F ; delete
+  15:     -	0000          	TERM_NULL:   equ $00 ; null
+  16:     -	0020          	TERM_SPACE:  equ $20 ; space
+  17:     -	0020          	TERM_RUBOUT: equ $20 ; whatever character is not visible (space, del or whatever)
+  18:				
+  19:     -	2580          	CONF_UART_BAUDRATE: equ 9600
+  20:     -	00FF          	UART_DIV_VAL:  equ CPU_SPEED/CONF_UART_BAUDRATE - 1
+  21:				
+  22:				
+  23:    0+10	0000  C33B00  	    jp main
+  24:				
+  25:				    
+  26:     -	0030          	    org $0030   ; rst 30h  ($f7)
+  27:   10+10	0030  C31401  	        jp fdc_isr
+  28:				
+  29:				
+  30:				
+  31:     -	0038          	    org $0038   ; rst 38h  ($ff)
+  32:   20+10	0038  C31F01  	        jp rtc_isr
+  33:				
+  34:				
+  35:				
+  36:     -	003B          	main:
+  37:   30+10	003B  210000  	    ld HL, 0
+  38:     -	003E          	_setup_loop:
+  39:   40+6	003E  23      	    inc HL
+  40:   46+4	003F  7C      	    ld A, H
+  41:   50+4	0040  B5      	    or L
+  42:   54+10	0041  C23E00  	    jp nz, _setup_loop
+  43:				
+  44:   64+10	0044  21FFFF  	    ld HL, RAM_END ; init stackpointer to end of memory
+  45:   74+6	0047  F9      	    ld SP,HL
+  46:				
+  47:   80+10	0048  210000  	    ld HL, $0000  ; catch any stack underflows
+  48:   90+11	004B  E5      	    push HL
+  49:				
+  50:				    ; init interrupt handlers
+  51:  101+8	004C  ED46    	    im 0
+  52:  109+7	004E  3EF7    	    ld A, $f7
+  53:  116+11	0050  D33C    	    out (IO_IVR_FDC), A
+  54:  127+7	0052  3EFF    	    ld A, $ff
+  55:  134+11	0054  D33D    	    out (IO_IVR_RTC), A
+  56:				
+  57:  145+10	0056  C39601  	    jp ioMon
+  58:				
+  59:				
+  60:				;---------------CONIO-----------------
+  61:				
+  62:				    include ../../mon/io_console.asm
+**** ../../mon/io_console.asm ****
+   1:				
+   2:				;-------------------------- CONSOLE IO --------------------------------
+   3:				
+   4:				; Prints the character stored in A. Trashes B.
+   5:     -	0059          	printChar:
+   6:     -	0059          	conout:
+   7:  155+4	0059  47      	    ld B, A
+   8:     -	005A          	_printChar_wait:
+   9:  159+11	005A  DB01    	    in A, (IO_UART_COM) ; read in status byte of UART
+  10:  170+7	005C  E601    	    and [1 << BIT_UART_TXRDY] ; mask out all bits except the TXRDY bit
+  11:  177+10	005E  CA5A00  	    jp z, _printChar_wait ; do this until UART is ready
+  12:				    
+  13:				    ; UART is ready to send another byte now
+  14:  187+4	0061  78      	    ld A, B
+  15:  191+11	0062  D300    	    out (IO_UART_DAT), A ; UART will start sending the byte now
+  16:				    
+  17:  202+10	0064  C9      	    ret
+  18:				    
+  19:				    
+  20:				    
+  21:				; Reads one character from the UART and stores it in A. The char is not echoed.
+  22:				;  Blocking call. This method will wait until UART has received a byte
+  23:     -	0065          	readChar:
+  24:     -	0065          	conin:
+  25:  212+11	0065  DB01    	    in A, (IO_UART_COM) ; read in status byte of UART
+  26:  223+7	0067  E602    	    and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
+  27:  230+10	0069  CA6500  	    jp z, readChar ; do this until UART has a valid byte
+  28:				    
+  29:  240+11	006C  DB00    	    in A, (IO_UART_DAT) ; read in data byte
+  30:				    
+  31:  251+10	006E  C9      	    ret
+  32:				    
+  33:				
+  34:				
+  35:				; Checks whether UART holds a character that is ready to be read.
+  36:				;  Sets A to $ff if char is available, $00 if not.
+  37:     -	006F          	hasChar:
+  38:     -	006F          	const:
+  39:  261+11	006F  DB01    	    in A, (IO_UART_COM) ; read in status byte of UART
+  40:  272+7	0071  E602    	    and [1 << BIT_UART_RXRDY] ; mask out all bits except the RXRDY bit
+  41:  279+10	0073  CA7900  	    jp z, _hasChar_no
+  42:  289+7	0076  3EFF    	    ld A, $ff
+  43:  296+10	0078  C9      	    ret
+  44:     -	0079          	_hasChar_no:
+  45:  306+4	0079  AF      	    xor A
+  46:  310+10	007A  C9      	    ret
+  47:				    
+  48:				
+  49:				
+  50:				; Prints all characters from (HL) to the next zero byte.
+  51:				;  Replaces all LFs ($0A) with CRLF ($0D, $0A)
+  52:     -	007B          	printString:
+  53:  320+7	007B  7E      	    ld A, (HL) ; fetch byte
+  54:  327+4	007C  B7      	    or A  ; compare with zero
+  55:  331+5+6	007D  C8      	    ret Z ; if byte is zero, we are done
+  56:				    
+  57:  336+7	007E  FE0A    	    cp TERM_LF ; if byte is LF, we need to go to next line
+  58:  343+10	0080  CA8A00  	    jp z, _printString_lf
+  59:				    
+  60:				    ; byte is neither zero not LF, so print it out
+  61:  353+17	0083  CD5900  	    call printChar
+  62:				    
+  63:  370+6	0086  23      	    inc HL ; increment HL and loop
+  64:  376+10	0087  C37B00  	    jp printString
+  65:				    
+  66:     -	008A          	_printString_lf:
+  67:  386+17	008A  CDD600  	    call printNewLine ; use nl routine for portability
+  68:  403+6	008D  23      	    inc HL
+  69:  409+10	008E  C37B00  	    jp printString
+  70:				    
+  71:				    
+  72:				    
+  73:				; Reads characters from the UART and stores them in the location pointed by HL.
+  74:				;  Reading continues until 255 characters have been read or a LF character is
+  75:				;  found. CR also terminates the input. The amount of bytes read is stored in the 
+  76:				;  C register. HL points to the first read byte after the call. The last byte of 
+  77:				;  the string (not included in C) is set to 0. During reading, control characters like 
+  78:				;  backspace are processed accordingly so the input resembles somewhat of a 
+  79:				;  command prompt.
+  80:     -	0091          	readString:
+  81:  419+7	0091  0E01    	    ld C, 1 ; count one char more than actually read to account for terminator when looking for overflow
+  82:  426+11	0093  E5      	    push HL ; save HL on stack
+  83:     -	0094          	_readString_loop:
+  84:  437+17	0094  CD6500  	    call readChar
+  85:				    
+  86:  454+7	0097  FE08    	    cp TERM_BS
+  87:  461+10	0099  CAB700  	    jp z, _readString_backspace
+  88:  471+7	009C  FE7F    	    cp TERM_DEL
+  89:  478+10	009E  CAB700  	    jp z, _readString_backspace
+  90:  488+7	00A1  FE0A    	    cp TERM_LF
+  91:  495+10	00A3  CAD100  	    jp z, _readString_end ; LF means we are done
+  92:  505+7	00A6  FE0D    	    cp TERM_CR
+  93:  512+10	00A8  CAD100  	    jp z, _readString_end ; CR means the same
+  94:				    
+  95:  522+17	00AB  CD5900  	    call printChar ; echo the entered character
+  96:				    
+  97:  539+7	00AE  77      	    ld (HL), A
+  98:				    
+  99:  546+6	00AF  23      	    inc HL
+ 100:  552+4	00B0  0C      	    inc C
+ 101:  556+10	00B1  CAD100  	    jp z, _readString_end ; return if C has flown over (255 chars read)
+ 102:				    
+ 103:  566+10	00B4  C39400  	    jp _readString_loop
+ 104:				
+ 105:     -	00B7          	_readString_backspace:
+ 106:  576+4	00B7  79      	    ld A, C
+ 107:  580+7	00B8  FE01    	    cp 1 ; important! we have one more char in c than actually read!
+ 108:  587+10	00BA  CA9400  	    jp z, _readString_loop ; nothing to delete. get on with it.
+ 109:				    
+ 110:				    ; TODO: Do this with string. takes less calls and loads
+ 111:  597+7	00BD  3E08    	    ld A, TERM_BS
+ 112:  604+17	00BF  CD5900  	    call printChar ; echo the BS to move cursor back one char...
+ 113:  621+7	00C2  3E20    	    ld A, TERM_RUBOUT
+ 114:  628+17	00C4  CD5900  	    call printChar ; overwrite the last entered char with rubout character...
+ 115:  645+7	00C7  3E08    	    ld A, TERM_BS
+ 116:  652+17	00C9  CD5900  	    call printChar ; and place cursor over the rubout char again
+ 117:				    
+ 118:  669+4	00CC  0D      	    dec C ; buffer minus one
+ 119:  673+6	00CD  2B      	    dec HL
+ 120:				    
+ 121:  679+10	00CE  C39400  	    jp _readString_loop ; back to loop
+ 122:				    
+ 123:     -	00D1          	_readString_end:
+ 124:  689+4	00D1  0D      	    dec C ; remove the additional char
+ 125:  693+10	00D2  3600    	    ld (HL),0 ; insert null terminator
+ 126:  703+10	00D4  E1      	    pop HL ; move HL back to start of buffer
+ 127:  713+10	00D5  C9      	    ret
+ 128:				
+ 129:				    
+ 130:				    
+ 131:				; Prints CRLF characters
+ 132:     -	00D6          	printNewLine:
+ 133:  723+7	00D6  3E0A    	    ld A, $0A
+ 134:  730+17	00D8  CD5900  	    call printChar
+ 135:  747+7	00DB  3E0D    	    ld A, $0D
+ 136:  754+17	00DD  CD5900  	    call printChar
+ 137:  771+10	00E0  C9      	    ret
+ 138:				
+ 139:				   
+ 140:				
+ 141:				; Clears the screen
+ 142:     -	00E1          	clearScreen:
+ 143:  781+10	00E1  210F01  	    ld HL, str_cls
+ 144:  791+17	00E4  CD7B00  	    call printString
+ 145:  808+10	00E7  C9      	    ret
+ 146:				
+**** iomon.asm ****
+  63:				
+  64:				
+  65:				
+  66:				;--------------STRINGS----------------
+  67:				
+  68:     -	00E8          	str_fdcInt:
+  69:     -	00E8  5B464443	    db '[FDC INT]', $0A, $00
+	      20494E54
+	      5D0A00
+  70:				
+  71:     -	00F3          	str_rtcInt:
+  72:     -	00F3  5B525443	    db '[RTC INT]', $0A, $00
+	      20494E54
+	      5D0A00
+  73:				
+  74:     -	00FE          	str_invalidCommand:
+  75:     -	00FE  494E5641	    db 'INVALID COMMAND', $0A, $00
+	      4C494420
+	      434F4D4D
+	      414E440A
+	      00
+  76:				
+  77:     -	010F          	str_cls:
+  78:     -	010F  1B5B324A	    db $1B, '[2J', $00 ; the VT100 way to clear screen
+	      00
+  79:				
+  80:				
+  81:				;--------------ISRs-----------------
+  82:				
+  83:     -	0114          	fdc_isr:
+  84:  818+4	0114  08      	    ex AF, AF'
+  85:  822+4	0115  D9      	    exx
+  86:				
+  87:  826+10	0116  21E800  	    ld HL, str_fdcInt
+  88:  836+17	0119  CD7B00  	    call printString
+  89:				
+  90:  853+4	011C  D9      	    exx
+  91:  857+4	011D  08      	    ex AF, AF'
+  92:  861+10	011E  C9      	    ret
+  93:				
+  94:				
+  95:				
+  96:     -	011F          	rtc_isr:
+  97:  871+4	011F  08      	    ex AF, AF'
+  98:  875+4	0120  D9      	    exx
+  99:				
+ 100:  879+10	0121  21F300  	    ld HL, str_rtcInt
+ 101:  889+17	0124  CD7B00  	    call printString
+ 102:				
+ 103:  906+4	0127  D9      	    exx
+ 104:  910+4	0128  08      	    ex AF, AF'
+ 105:  914+10	0129  C9      	    ret
+ 106:				
+ 107:				
+ 108:				;-------------FORMATTERS------------
+ 109:				
+ 110:				; Prints the byte stored in A in uppercase hexadecimal format.
+ 111:				;  Taken from Alexis Kotlowys monitor because I'm lazy. Man, this guy really hasn't many comments to spare.
+ 112:     -	012A          	printHex:
+ 113:  924+11	012A  F5      	    push af
+ 114:  935+7	012B  E6F0    	    and $f0
+ 115:  942+4	012D  0F      	    rrca
+ 116:  946+4	012E  0F      	    rrca
+ 117:  950+4	012F  0F      	    rrca
+ 118:  954+4	0130  0F      	    rrca
+ 119:  958+17	0131  CD3501  	    call _printHex_1
+ 120:  975+10	0134  F1      	    pop af
+ 121:     -	0135          	_printHex_1:
+ 122:  985+7	0135  E60F    	    and $0f
+ 123:  992+7	0137  FE0A    	    cp $0a
+ 124:  999+10	0139  DA4301  	    jp c, _printHex_2
+ 125: 1009+7	013C  D609    	    sub $09
+ 126: 1016+7	013E  F640    	    or $40
+ 127: 1023+10	0140  C34501  	    jp _printHex_3
+ 128:     -	0143          	_printHex_2:
+ 129: 1033+7	0143  F630    	    or $30
+ 130:     -	0145          	_printHex_3:
+ 131: 1040+17	0145  CD5900  	    call printChar
+ 132: 1057+10	0148  C9      	    ret
+ 133:				
+ 134:				
+ 135:				
+ 136:     -	0149          	parseHex:
+ 137: 1067+7	0149  FE30    	    cp $30
+ 138: 1074+10	014B  FA5601  	    jp m, _parseHex_noDigit ; char is < '0'
+ 139: 1084+7	014E  FE3A    	    cp $3A
+ 140: 1091+10	0150  F25601  	    jp p, _parseHex_noDigit ; char is > '9' 
+ 141:				    ; char is a digit
+ 142: 1101+7	0153  D630    	    sub '0' ; subtract the value of '0'. hex value is now stored in A
+ 143: 1108+10	0155  C9      	    ret
+ 144:				    
+ 145:     -	0156          	_parseHex_noDigit:
+ 146: 1118+7	0156  FE61    	    cp 'a'
+ 147: 1125+10	0158  FA6301  	    jp m, _parseHex_noLC ; char is < 'a'
+ 148: 1135+7	015B  FE67    	    cp 'g'
+ 149: 1142+10	015D  F26301  	    jp p, _parseHex_noLC; char is > 'f'
+ 150:				    ; char is a lowercase hex letter
+ 151: 1152+7	0160  D657    	    sub 'a' - $0a ; subtract the value of 'a' and add $0a (as a means $0a)
+ 152: 1159+10	0162  C9      	    ret
+ 153:				    
+ 154:     -	0163          	_parseHex_noLC:
+ 155: 1169+7	0163  FE41    	    cp 'A'
+ 156: 1176+10	0165  FA7001  	    jp m, _parse_error ; char is < 'A'
+ 157: 1186+7	0168  FE47    	    cp 'G'
+ 158: 1193+10	016A  F27001  	    jp p, _parse_error ; char is > 'F'
+ 159:				    ; char is an uppercase hex letter
+ 160: 1203+7	016D  D637    	    sub 'A' - $0a  ; subtract the value of 'A' and add $0a (as A means $0a)
+ 161: 1210+10	016F  C9      	    ret
+ 162:				    
+ 163:     -	0170          	_parse_error:
+ 164: 1220+7	0170  3EFF    	    ld A, $FF
+ 165: 1227+10	0172  C9      	    ret
+ 166:				
+ 167:				
+ 168:				
+ 169:     -	0173          	parseByte:
+ 170: 1237+7	0173  7E      	    ld A, (HL)
+ 171: 1244+6	0174  23      	    inc HL
+ 172: 1250+4	0175  0D      	    dec C
+ 173: 1254+17	0176  CD4901  	    call parseHex
+ 174: 1271+4	0179  47      	    ld B, A
+ 175:				
+ 176: 1275+4	017A  79      	    ld A, C
+ 177: 1279+4	017B  B7      	    or A
+ 178: 1283+10	017C  CA8B01  	    jp z, _parseByte_noByteLeft
+ 179:				
+ 180: 1293+4	017F  78      	    ld A, B
+ 181: 1297+4	0180  07      	    rlca
+ 182: 1301+4	0181  07      	    rlca
+ 183: 1305+4	0182  07      	    rlca
+ 184: 1309+4	0183  07      	    rlca
+ 185: 1313+4	0184  47      	    ld B, A
+ 186:				
+ 187: 1317+7	0185  7E      	    ld A, (HL)
+ 188: 1324+6	0186  23      	    inc HL
+ 189: 1330+4	0187  0D      	    dec C
+ 190: 1334+17	0188  CD4901  	    call parseHex
+ 191:     -	018B          	_parseByte_noByteLeft:
+ 192: 1351+4	018B  80      	    add B
+ 193: 1355+10	018C  C9      	    ret
+ 194:				
+ 195:				
+ 196:				
+ 197:				; increments HL and decrements C while (HL) is a whitespace character
+ 198:     -	018D          	skipWhites:
+ 199: 1365+7	018D  7E      	    ld A,(HL)
+ 200: 1372+7	018E  FE20    	    cp TERM_SPACE ; check if char is == SPACE
+ 201: 1379+5+6	0190  C0      	    ret nz
+ 202:				    ;char was == SPACE -> skip char
+ 203: 1384+6	0191  23      	    inc HL
+ 204: 1390+4	0192  0D      	    dec C
+ 205: 1394+10	0193  C38D01  	    jp skipWhites
+ 206:				
+ 207:				
+ 208:				;-------------MAIN-------------------
+ 209:				
+ 210:				
+ 211:     -	0196          	ioMon:
+ 212:				    ; initialize TCCR and perform an IO-RESET before initializing peripherals
+ 213: 1404+7	0196  3E02    	    ld A, [1 << BIT_TCCR_IO_RESET]; set only IO-RESET bit to one
+ 214: 1411+11	0198  D320    	    out (IO_TCCR),A
+ 215: 1422+4	019A  00      	    nop ; keep the IO-RESET line high for at least 8 clock pulses ( = 2 NOPs)
+ 216: 1426+4	019B  00      	    nop
+ 217: 1430+4	019C  AF      	    xor A ; clear all TCCR bits, including IO-RESET bit
+ 218: 1434+11	019D  D320    	    out (IO_TCCR),A
+ 219:				    ; TCCR is now initialized and IO-Devices are reset
+ 220:				    
+ 221:				    ; PIT 2 is connected to UART, so set it up for baud rate generation
+ 222: 1445+7	019F  3EB6    	    ld A, $B6 ; %10110110  ; set counter 2 in mode 3, binary counting
+ 223: 1452+11	01A1  D313    	    out (IO_PIT_CTRL), A
+ 224:				    ; write divider value to counter (first LSB, then MSB as set in command above)
+ 225: 1463+7	01A3  3EFF    	    ld A, low UART_DIV_VAL
+ 226: 1470+11	01A5  D312    	    out (IO_PIT_C2), A
+ 227: 1481+7	01A7  3E00    	    ld A, high UART_DIV_VAL
+ 228: 1488+11	01A9  D312    	    out (IO_PIT_C2), A
+ 229:				    ; registers for counter are set. now we can gate the counter
+ 230: 1499+11	01AB  DB20    	    in A,(IO_TCCR)
+ 231: 1510+7	01AD  E63D    	    and IO_TCCR_WRITE_MASK ; mask out all the bits that are not readable
+ 232: 1517+7	01AF  F610    	    or [1 << BIT_TCCR_C2_GATE]
+ 233: 1524+11	01B1  D320    	    out (IO_TCCR), A ; C2 is now counting
+ 234:				    
+ 235:				    ; write mode byte to UART (first command byte after reset)
+ 236: 1535+7	01B3  3E4D    	    ld A, $4D  ; 1x mode, 8N1
+ 237: 1542+11	01B5  D301    	    out (IO_UART_COM), A 
+ 238:				    ; enable receiver and transmitter.
+ 239:				    ;  also, set /DTR of UART to 1. Indicator LED should turn off, giving visual feedback that CPU is alive
+ 240: 1553+7	01B7  3E07    	    ld A, [(1 << BIT_UART_TXEN) | (1 << BIT_UART_RXEN) | (1 << BIT_UART_DTR)]
+ 241: 1560+11	01B9  D301    	    out (IO_UART_COM), A
+ 242:				
+ 243:				
+ 244:				
+ 245:     -	01BB          	prompt:
+ 246: 1571+17	01BB  CDD600  	    call printNewLine
+ 247: 1588+7	01BE  3E3E    	    ld A, '>' ; print input prompt
+ 248: 1595+17	01C0  CD5900  	    call printChar
+ 249:				    
+ 250: 1612+10	01C3  210120  	    ld HL, DAT_INPUT_BUFFER ; this is where we want to store the read bytes
+ 251: 1622+17	01C6  CD9100  	    call readString ; read user input
+ 252:				    
+ 253: 1639+4	01C9  79      	    ld A, C 
+ 254: 1643+4	01CA  B7      	    or A
+ 255: 1647+10	01CB  CABB01  	    jp z, prompt  ; user entered nothing. prompt again
+ 256:				    
+ 257: 1657+17	01CE  CDD600  	    call printNewLine ; insert a new line after user entered a command
+ 258:				
+ 259: 1674+17	01D1  CD8D01  	    call skipWhites ; skip whitespace at beginning of command
+ 260:				
+ 261:     -	01D4          	proc_loop: 
+ 262:				    ; process user input
+ 263: 1691+7	01D4  46      	    ld B, (HL) ; load fist byte entered
+ 264: 1698+6	01D5  23      	    inc HL ; move HL to next byte
+ 265: 1704+4	01D6  0D      	    dec C
+ 266:				    
+ 267: 1708+17	01D7  CD8D01  	    call skipWhites
+ 268:				    
+ 269: 1725+4	01DA  78      	    ld A, B
+ 270:				    
+ 271:				    ; determine entered command
+ 272: 1729+7	01DB  FE69    	    cp 'i'
+ 273: 1736+10	01DD  CA0802  	    jp z, command_in
+ 274:				    
+ 275: 1746+7	01E0  FE6F    	    cp 'o'
+ 276: 1753+10	01E2  CA1F02  	    jp z, command_out
+ 277:				    
+ 278: 1763+7	01E5  FE70    	    cp 'p'
+ 279: 1770+10	01E7  CA3A02  	    jp z, command_port
+ 280:				    
+ 281: 1780+7	01EA  FE5F    	    cp '_'
+ 282: 1787+10	01EC  CA5102  	    jp z, command_ei
+ 283:				
+ 284: 1797+7	01EF  FE7C    	    cp '|'
+ 285: 1804+10	01F1  CA5502  	    jp z, command_di
+ 286:				
+ 287: 1814+10	01F4  21FE00  	    ld HL, str_invalidCommand
+ 288: 1824+17	01F7  CD7B00  	    call printString
+ 289: 1841+10	01FA  C3BB01  	    jp prompt
+ 290:				
+ 291:     -	01FD          	proc_end:
+ 292: 1851+17	01FD  CD8D01  	    call skipWhites
+ 293: 1868+4	0200  79      	    ld A, C 
+ 294: 1872+4	0201  B7      	    or A
+ 295: 1876+10	0202  C2D401  	    jp nz, proc_loop  ; still stuff left to process
+ 296: 1886+10	0205  C3BB01  	    jp prompt
+ 297:				
+ 298:				
+ 299:				
+ 300:     -	0208          	command_in:
+ 301: 1896+4	0208  41      	    ld B, C  ; stash C
+ 302: 1900+13	0209  3A0020  	    ld A, (DAT_CURRENT_PORT)
+ 303: 1913+4	020C  4F      	    ld C, A
+ 304: 1917+12	020D  ED50    	    in D, (C)
+ 305: 1929+4	020F  48      	    ld C, B  ; restore C
+ 306: 1933+7	0210  3E69    	    ld A, 'i'
+ 307: 1940+17	0212  CD5900  	    call printChar
+ 308: 1957+4	0215  7A      	    ld A, D
+ 309: 1961+17	0216  CD2A01  	    call printHex
+ 310: 1978+17	0219  CDD600  	    call printNewLine
+ 311: 1995+10	021C  C3FD01  	    jp proc_end
+ 312:				
+ 313:     -	021F          	command_out:
+ 314: 2005+17	021F  CD7301  	    call parseByte
+ 315: 2022+4	0222  57      	    ld D, A 
+ 316: 2026+4	0223  41      	    ld B, C  ; stash C
+ 317: 2030+13	0224  3A0020  	    ld A, (DAT_CURRENT_PORT)
+ 318: 2043+4	0227  4F      	    ld C, A
+ 319: 2047+12	0228  ED51    	    out (C), D
+ 320: 2059+4	022A  48      	    ld C, B  ; restore C
+ 321: 2063+7	022B  3E6F    	    ld A, 'o'
+ 322: 2070+17	022D  CD5900  	    call printChar
+ 323: 2087+4	0230  7A      	    ld A, D
+ 324: 2091+17	0231  CD2A01  	    call printHex
+ 325: 2108+17	0234  CDD600  	    call printNewLine
+ 326: 2125+10	0237  C3FD01  	    jp proc_end
+ 327:				
+ 328:     -	023A          	command_port:
+ 329: 2135+17	023A  CD7301  	    call parseByte
+ 330: 2152+13	023D  320020  	    ld (DAT_CURRENT_PORT), A
+ 331: 2165+7	0240  3E70    	    ld A, 'p'
+ 332: 2172+17	0242  CD5900  	    call printChar
+ 333: 2189+13	0245  3A0020  	    ld A, (DAT_CURRENT_PORT)
+ 334: 2202+17	0248  CD2A01  	    call printHex
+ 335: 2219+17	024B  CDD600  	    call printNewLine
+ 336: 2236+10	024E  C3FD01  	    jp proc_end
+ 337:				
+ 338:     -	0251          	command_ei:
+ 339: 2246+4	0251  FB      	    ei
+ 340: 2250+10	0252  C3FD01  	    jp proc_end
+ 341:				
+ 342:     -	0255          	command_di:
+ 343: 2260+4	0255  F3      	    di
+ 344: 2264+10	0256  C3FD01  	    jp proc_end
+ 345:				    
+ 346:				
+ 347:				    
+ 348:				
+ 349:				
+ 350:     -	0259          	mon_end:
+ 351:				    
+ 352:				    ; pad out file for maximum rom size
+ 353:     -	0259 .. 1FFF FF	    dc [8192 - mon_end], $ff
+ 354:				
+ 355:				
+ 356:				
+ 357:				; --------------- DATA AREAS --------------------
+ 358:				
+ 359:     -	2000          	    org ROM_END
+ 360:				
+ 361:				; Define data areas in RAM here
+ 362:				
+ 363:     -	2000          	DAT_CURRENT_PORT:         ds 1
+ 364:     -	2001          	DAT_INPUT_BUFFER:         ds 256
+ 365:				
+ 366:				
+ 367:     -	003B          	    end main
+
+
+
+Statistics:
+
+     4	passes
+     0	jr promotions
+   177	symbols
+  8142	bytes
+
+
+
+Symbol Table:
+
+_haschar_no       79     
+_parse_error     170     
+_parsebyte_nobyteleft  18b     
+_parsehex_nodigit  156     
+_parsehex_nolc   163     
+_printchar_wait   5a     
+_printhex_1      135     
+_printhex_2      143     
+_printhex_3      145     
+_printstring_lf   8a     
+_readstring_backspace   b7     
+_readstring_end   d1     
+_readstring_loop   94     
+_setup_loop       3e     
+bit_ebcr_irq_opl=   7     
+bit_ebcr_test  =   0     
+bit_fdc_bad_cylinder=   1     
+bit_fdc_busy   =   4     
+bit_fdc_control_mark=   6     
+bit_fdc_data_error=   5     
+bit_fdc_data_input=   6     
+bit_fdc_datarate0=   0     
+bit_fdc_datarate1=   1     
+bit_fdc_disable_precomp=   2     
+bit_fdc_dma_enable=   3     
+bit_fdc_drive_select=   0     
+bit_fdc_end_of_cylinder=   7     
+bit_fdc_equipment_check=   4     
+bit_fdc_exec_mode=   5     
+bit_fdc_fdd0_busy=   0     
+bit_fdc_fdd1_busy=   1     
+bit_fdc_fdd2_busy=   2     
+bit_fdc_fdd3_busy=   3     
+bit_fdc_head_select=   2     
+bit_fdc_interrupt_code0=   6     
+bit_fdc_interrupt_code1=   7     
+bit_fdc_missing_adress_mark=   0     
+bit_fdc_missing_adress_mark_in_data_fiel=   0     
+bit_fdc_mode_select=   7     
+bit_fdc_motor_enable_1=   4     
+bit_fdc_motor_enable_2=   5     
+bit_fdc_no_data=   2     
+bit_fdc_not_ready=   3     
+bit_fdc_not_writeable=   1     
+bit_fdc_overrun=   4     
+bit_fdc_powerdown=   0     
+bit_fdc_ready  =   5     
+bit_fdc_request_for_master=   7     
+bit_fdc_scan_equal=   3     
+bit_fdc_scan_not=   2     
+bit_fdc_seek_end=   5     
+bit_fdc_soft_reset=   2     
+bit_fdc_sr0_unit_select_0=   0     
+bit_fdc_sr0_unit_select_1=   1     
+bit_fdc_sr3_data_error=   5     
+bit_fdc_track_0=   4     
+bit_fdc_unit_select_0=   0     
+bit_fdc_unit_select_1=   1     
+bit_fdc_write_protected=   3     
+bit_fdc_write_protected_legacy=   6     
+bit_fdc_wrong_cylinder=   4     
+bit_rtc_24_12  =   2     
+bit_rtc_30_sec_adj=   3     
+bit_rtc_busy   =   1     
+bit_rtc_hold   =   0     
+bit_rtc_irq_flag=   2     
+bit_rtc_itrpt_stnd=   1     
+bit_rtc_mask   =   0     
+bit_rtc_pm_am  =   2     
+bit_rtc_rest   =   0     
+bit_rtc_stop   =   1     
+bit_rtc_t0     =   2     
+bit_rtc_t1     =   3     
+bit_rtc_test   =   3     
+bit_tccr_c0_gate=   2     
+bit_tccr_c0_out=   6     
+bit_tccr_c1_gate=   3     
+bit_tccr_c1_int_enable=   5     
+bit_tccr_c2_gate=   4     
+bit_tccr_io_reset=   1     
+bit_tccr_rom_gate=   0     
+bit_tccr_tape_data_read=   7     
+bit_tccr_tape_data_write=   7     
+bit_tccr_tape_motor=   6     
+bit_tccr_tape_sense=   1     
+bit_uart_dsr   =   7     
+bit_uart_dtr   =   1     
+bit_uart_framing_err=   5     
+bit_uart_hunt_mode=   7     
+bit_uart_int_reset=   6     
+bit_uart_overrun_err=   4     
+bit_uart_parity_err=   3     
+bit_uart_reset_error=   4     
+bit_uart_rts   =   5     
+bit_uart_rxen  =   2     
+bit_uart_rxrdy =   1     
+bit_uart_send_break=   3     
+bit_uart_syndet=   6     
+bit_uart_txempty=   2     
+bit_uart_txen  =   0     
+bit_uart_txrdy =   0     
+clearscreen       e1     
+command_di       255     
+command_ei       251     
+command_in       208     
+command_out      21f     
+command_port     23a     
+conf_uart_baudrate=2580     
+conin             65     
+conout            59     
+const             6f     
+cpu_speed      =  258000 
+dat_current_port 2000     
+dat_input_buffer 2001     
+fdc_isr          114     
+haschar           6f     
+io_ebcr        =  3e     
+io_fdc_cont    =  38     
+io_fdc_data    =  31     
+io_fdc_oper    =  34     
+io_fdc_stat    =  30     
+io_ivr_fdc     =  3c     
+io_ivr_rtc     =  3d     
+io_pit_c0      =  10     
+io_pit_c1      =  11     
+io_pit_c2      =  12     
+io_pit_ctrl    =  13     
+io_rtc_cd      =  4d     
+io_rtc_ce      =  4e     
+io_rtc_cf      =  4f     
+io_rtc_d1      =  46     
+io_rtc_d10     =  47     
+io_rtc_h1      =  44     
+io_rtc_h10     =  45     
+io_rtc_mi1     =  42     
+io_rtc_mi10    =  43     
+io_rtc_mo1     =  48     
+io_rtc_mo10    =  49     
+io_rtc_s1      =  40     
+io_rtc_s10     =  41     
+io_rtc_w       =  4c     
+io_rtc_y1      =  4a     
+io_rtc_y10     =  4b     
+io_tccr        =  20     
+io_tccr_write_mask=  3d     
+io_uart_com    =   1     
+io_uart_dat    =   0     
+iomon            196     
+main              3b     
+mon_end          259     
+parsebyte        173     
+parsehex         149     
+printchar         59     
+printhex         12a     
+printnewline      d6     
+printstring       7b     
+proc_end         1fd     
+proc_loop        1d4     
+prompt           1bb     
+ram_end        =ffff     
+readchar          65     
+readstring        91     
+rom_end        =2000     
+rtc_isr          11f     
+skipwhites       18d     
+str_cls          10f     
+str_fdcint        e8     
+str_invalidcommand   fe     
+str_rtcint        f3     
+term_bs        =   8     
+term_cr        =   d     
+term_del       =  7f     
+term_lf        =   a     
+term_null      =   0     
+term_rubout    =  20     
+term_space     =  20     
+uart_div_val   =  ff     
+

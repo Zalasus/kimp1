@@ -26,8 +26,9 @@ CONF_RESET_ON_STARTUP: equ 0    ; will clear memory on startup if set to one
 CONF_STARTUP_DELAY:    equ 1    ; will delay approx. 1 sec on startup
 
 ; UART configuration (data format is always 8 data, 1 stop, no parity)
+;  Prescaler > 1 greatly reduces the number of bit errors due to phase shift of clock
 CONF_UART_BAUDRATE: equ 9600
-CONF_UART_PRESCALE: equ 1      ; possible values are 1, 16 and 64
+CONF_UART_PRESCALE: equ 16      ; possible values are 1, 16 and 64
 
 ; Command configuration
 CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
@@ -71,15 +72,17 @@ MON_ADDRESS_SEPARATOR:  equ ':'
 
 MON_INPUT_BUFFER_SIZE:  equ $100
 
-UART_DIV_VAL:  equ (CPU_SPEED/CONF_UART_PRESCALE)/CONF_UART_BAUDRATE - 1
 if CONF_UART_PRESCALE == 1
     UART_MODE_INSTRUCTION: equ $4D  ; %01001101
+    UART_DIV_VAL:  equ CPU_SPEED/(CONF_UART_PRESCALE*CONF_UART_BAUDRATE) - 1 ; minus one correction seems to be necessary
 endif
 if CONF_UART_PRESCALE == 16
     UART_MODE_INSTRUCTION: equ $4E  ; %01001110
+    UART_DIV_VAL:  equ CPU_SPEED/(CONF_UART_PRESCALE*CONF_UART_BAUDRATE)
 endif
 if CONF_UART_PRESCALE == 64
     UART_MODE_INSTRUCTION: equ $4F  ; %01001111
+    UART_DIV_VAL:  equ CPU_SPEED/(CONF_UART_PRESCALE*CONF_UART_BAUDRATE)
 endif
 
 
@@ -147,21 +150,19 @@ _setup_loop:
     or L
     jp nz, _setup_loop    
 endif
-
-    ld HL, RAM_END ; init stackpointer to end of memory
-    ld SP,HL
-
-    ld HL, $0000  ; catch any stack underflows
-    push HL
+    
+    ld HL, $0000  
+    ld SP, HL   ; init stackpointer to end of memory
+    push HL   ; catch any stack underflows
 
     ; init interrupt handlers
     ;  we use IM0~ the 19 clock cycle penalty for IM2 is way too heavy for disk access
+    ;  init both IVRs to known value, leave interrupts disabled for now
+    di
     im 0
-    ld A, IVR_FDC_DEF
+    xor A
     out (IO_IVR_FDC), A
-    ld A, IVR_RTC
     out (IO_IVR_RTC), A
-    ei
 
 if CONF_RESET_ON_STARTUP == 0
     jp monitorStart ; skip soft reset and jump to monitor setup
@@ -703,13 +704,10 @@ monitorStart:
 
     call ext_test
     jp nc, _monitor_init_noext
-
-    ld HL, str_loading
-    call printString
-
     call rtc_init
     call opl_init
     call fdc_init
+    ei
     ld A, $ff
     ld (DAT_EXT_INITIALIZED), A
 _monitor_init_noext:
@@ -743,7 +741,7 @@ monitorPrompt_loop:
     
     ld A, C 
     or A
-    jp Z, monitorPrompt_loop ; user entered nothing. prompt again
+    jp z, monitorPrompt_loop ; user entered nothing. prompt again
     
     call printNewLine ; insert a new line after user entered a command
     
@@ -816,7 +814,20 @@ monitor_syntaxError:
     jp monitorPrompt_loop
     
     
+
+; subroutine that prints message asking user to hit space.
+;  all characters are discarded. returns once user has hit space. 
+monitor_waitForSpace:
+    ld HL, str_hitSpace
+    call printString
+_monitor_waitForSpace_loop:
+    call readChar
+    cp TERM_SPACE
+    jp nz, _monitor_waitForSpace_loop
+    ret
+
     
+
 ;---------------------- MONITOR COMMANDS ---------------------
 
 ; NOTE: These are not CALL-ed! 
@@ -1381,24 +1392,34 @@ _hex_eof:
     ; expect checksum $ff
     call readHex
     cp $ff
-    jp nz, _hex_error
+    jp nz, _hex_checksum_error
     
     ; got expected checksum. we're done reading hex file
     ld HL, str_hexOK
     call printString
 
+    call monitor_waitForSpace ; just in case any stry records were appended
+
     jp monitorPrompt_loop
 
 
-_hex_checksum_error
+_hex_checksum_error:
     ld HL, str_hexChecksumError
     call printString
+
+    ; wait for user to hit space and discard all other chars.
+    ;  keeps hex garble out of command prompt
+    call monitor_waitForSpace
 
     jp monitorPrompt_loop
 
 _hex_error:
     ld HL, str_hexError
     call printString
+
+    ; wait for user to hit space and discard all other chars.
+    ;  keeps hex garble out of command prompt
+    call monitor_waitForSpace
 
     jp monitorPrompt_loop
 
@@ -1747,11 +1768,11 @@ DAT_RTC_COUNTER:           ds 1
 DAT_RTC_CALLBACK:          ds 2
 DAT_EXT_INITIALIZED:       ds 1
 DAT_DISK_MOTOR_DRIVE:      ds 1  ; bit 1 = motors were enabled, bit 0 = drive number
-DAT_DISK_DATAPTR:          ds 2
 DAT_DISK_NUMBER:           ds 1  ; number of currently selected drive
 DAT_DISK_TRACK:            ds 1
 DAT_DISK_SECTOR:           ds 1
-DAT_DISK_INT_SR0:          ds 1  ; sr0 as returned by last interrupt
+DAT_DISK_INT_SR0:          ds 1  ; used by FDC ISR to store result bytes of SENSEI command
+DAT_DISK_INT_CYLINDER:     ds 1  ;   "
 DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
 DAT_MON_REG_BUFFER:        ds 16
 DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last

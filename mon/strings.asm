@@ -47,6 +47,9 @@ str_hexChecksumError:
 str_hexRecordEof:
     db ':00000001FF', $0A, $00
 
+str_hitSpace:
+    db 'HIT SPACE TO CONTINUE', $0A, $00
+
 str_notImplemented:
     db 'NOT IMPLEMENTED CAUSE ZAL IS A LAZY ASS', $0A, $00
 
