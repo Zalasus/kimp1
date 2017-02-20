@@ -24,6 +24,7 @@ rtc_init:
     
 
 ; A test routine to print the current time to console. No LF is appended so CR can be used
+;  to refresh the printed line for a continous clock
 rtc_printTime:
     in A, (IO_RTC_H10)
     and $03  ; mask out AM/PM bit
@@ -119,8 +120,7 @@ _rtc_delay_loop:
     or A
     jp nz, _rtc_delay_loop
     
-    ld A, $03  ; mask bit = 1, int mode
-    out (IO_RTC_CE), A
+    call rtc_disableInterrupt
 
     ret
 
@@ -160,10 +160,10 @@ rtc_deleteTimeout:
     call rtc_disableInterrupt
 
     ; reset counter and callback
-    ld HL, $0000
-    ld (DAT_RTC_CALLBACK), HL
     xor A
     ld (DAT_RTC_COUNTER), A
+    ld HL, $0000
+    ld (DAT_RTC_CALLBACK), HL
 
     ret
 
@@ -190,43 +190,43 @@ rtc_enableInterrupt:
 
 ; Interrupt handler for the timed interval interrupt by the RTC
 rtc_isr:
-    exx
-    ex af,af'
+    ; NOTE: do not exchange here. since we needed to check a flag in restart vector,
+    ;  registers will already have been exchanged once we get here
+    ;exx
+    ;ex af,af'
 
     ; clear the irq flag
     xor A
     out (IO_RTC_CD), A
     
     ld A, (DAT_RTC_COUNTER)
+    or A
+    jp z, _rtc_isr_counterHitZero
     dec A
     ld (DAT_RTC_COUNTER), A
     jp nz, _rtc_isr_end
 
+_rtc_isr_counterHitZero:
     ; counter hit zero. if there's a callback, call it
     ld HL, (DAT_RTC_CALLBACK)
     ld A, H
     or L
-    jp z, _rtc_isr_callback_end  ; no need to call back once counter hit zero
+    jp z, _rtc_isr_noCallback
     
     ; make a call to callback
-    ;ld DE, _rtc_isr_callback_end
-    ;push DE
-    ;jp (HL)
+    ld DE, _rtc_isr_callback_end
+    push DE
+    jp (HL)
 _rtc_isr_callback_end:
-    ;call rtc_deleteTimeout
+    call rtc_deleteTimeout
 
+_rtc_isr_noCallback:
 _rtc_isr_end:
     exx
     ex af, af'
     ei
     ret
 
-
-    
-rtc_delayTest:
-    ld A, 3
-    call rtc_delay
-    ret
 
 
 

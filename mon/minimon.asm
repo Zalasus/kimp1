@@ -127,6 +127,8 @@ IVR_RTC:        equ $ff
         ;  since the RTC-IVR is shared by both RTC and OPL, we need to
         ;  determine the exact cause for the interrupt here and jump to
         ;  the right handler. OPL has priority over RTC
+        exx
+        ex AF, AF'
         in A, (IO_EBCR)
         bit BIT_EBCR_IRQ_OPL, A
         jp z, opl_isr
@@ -170,8 +172,9 @@ endif
 
 
 soft_reset:
-    ld HL, RAM_END ; reset stackpointer
+    ld HL, $0000  ; reset stackpointer
     ld SP, HL
+    push HL       ; restore underflow catch
     
     ; clear memory
     ld HL, ROM_END 
@@ -627,14 +630,14 @@ stashRegisters:
     ld (DAT_MON_REG_BUFFER+6), HL
     ld (DAT_MON_REG_BUFFER+10), IX
     ld (DAT_MON_REG_BUFFER+12), IY
-    
-    ld HL, $0002 ; stack pointer is two bytes to low when calling this. fix that manually
-    add HL, SP
-    ld (DAT_MON_REG_BUFFER+8), HL
 
     push AF
     pop HL
     ld (DAT_MON_REG_BUFFER), HL
+
+    ld HL, $0002 ; stack pointer is two bytes to low when calling this. fix that manually
+    add HL, SP
+    ld (DAT_MON_REG_BUFFER+8), HL
 
     ld A, I
     ld (DAT_MON_REG_BUFFER+14), A

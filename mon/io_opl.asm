@@ -11,6 +11,9 @@ opl_init:
 
 ; Interrupt service routine for the OPL timer interrupt
 opl_isr:
+    ; NOTE: do not exchange here. since we needed to check a flag in restart vector,
+    ;  registers will already have been exchanged once we get here
+
     ; TODO: Clear OPL interrupt flag here
     ei
     ret
