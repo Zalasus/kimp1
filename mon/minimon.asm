@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.3
+;           VERSION 0.4
 ;
 ;       for the KIMP1 system
 ;
@@ -32,6 +32,9 @@ CONF_UART_PRESCALE: equ 16      ; possible values are 1, 16 and 64
 
 ; Command configuration
 CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
+
+; Floppy disk configuration
+CONF_DISK_MAX_RETRIES:      equ 8
 
 
 
@@ -542,7 +545,7 @@ _expression_loop:
     inc HL
     dec C
     call _expression_term
-    ret c  ; syntax error
+    jp c, _expression_errorStackFix  ; syntax error
     ld (DAT_EXPR_WORDSTOR), HL ; save HL
     pop HL
     call subtractHLDE
@@ -555,7 +558,7 @@ _expression_add:
     inc HL
     dec C
     call _expression_term
-    ret c ; syntax error
+    jp c, _expression_errorStackFix ; syntax error
     ld (DAT_EXPR_WORDSTOR), HL
     pop HL
     add HL, DE
@@ -603,6 +606,11 @@ _expression_factor_answer:
 _expression_factor_end:
     call skipWhites
     jp resetCarryReturn
+
+_expression_errorStackFix:
+    inc SP  ; don't touch any registers. wont affect flags
+    inc SP
+    ret
 
 
 ; HL = HL - DE. DE is not affected
@@ -1604,7 +1612,10 @@ command_disk:
     jp z, _command_disk_selSector
 
     cp 'r'
-    jp z, _command_disk_recalibrate
+    jp z, _command_disk_read
+
+    cp 'w'
+    jp z, _command_disk_write
 
     cp 'f'
     jp z, _command_disk_format
@@ -1643,8 +1654,21 @@ _command_disk_selSector:
     ld (DAT_DISK_SECTOR), A
     jp _command_disk_end
 
-_command_disk_recalibrate:
-    call fdc_recalibrate
+_command_disk_read:
+    call expression
+    jp c, monitor_syntaxError
+    ld (DAT_DISK_DATAPTR), DE
+    ld HL, fdc_readData
+    call fdc_commandWithRetry
+    jp c, _command_disk_error
+    jp _command_disk_end
+
+_command_disk_write:
+    call expression
+    jp c, monitor_syntaxError
+    ld (DAT_DISK_DATAPTR), DE
+    ld HL, fdc_writeData
+    call fdc_commandWithRetry
     jp c, _command_disk_error
     jp _command_disk_end
 
@@ -1657,7 +1681,8 @@ _command_disk_format:
     dec C
     ; TODO: add code to format all tracks here
 _command_disk_format_notAll:
-    call fdc_format
+    ld HL, fdc_format
+    call fdc_commandWithRetry
     jp c, _command_disk_error
     jp _command_disk_end
 
@@ -1674,11 +1699,17 @@ _command_disk_error_extNotInitialized:
 _command_disk_error:
     cp $01
     jp z, _command_disk_fdcError
+    cp $02
+    jp z, _command_disk_wpError
     ld HL, str_diskError
     call printString
     jp monitorPrompt_loop
 _command_disk_fdcError:
     ld HL, str_fdcError
+    call printString
+    jp monitorPrompt_loop
+_command_disk_wpError:
+    ld HL, str_fdcWriteProtectedError
     call printString
     jp monitorPrompt_loop
 
@@ -1727,7 +1758,7 @@ monitorToRam:
     ; give control to shovelknight
     jp shovelknight_ram
 
-shovelknight_ram:     equ DAT_INPUT_BUFFER    ; where to store monitor ROM before disabling ROM mapping
+shovelknight_ram:     equ DAT_SK_BUFFER    ; where to store monitor ROM before disabling ROM mapping
 shovelknight_size:    equ shovelknight_rom_end - shovelknight_rom                   
 shovelknight_ram_end: equ shovelknight_ram + shovelknight_size    
     
@@ -1747,10 +1778,12 @@ shovelknight_rom:
     ld DE, $0000
     ld BC, monitor_end
     ldir
-    
-    jp monitorPrompt_loop ; shovelknight is done
+
+    ret ; shovelknight is done
 
 shovelknight_rom_end:
+
+    
 
 monitor_end:
     
@@ -1776,8 +1809,13 @@ DAT_DISK_TRACK:            ds 1
 DAT_DISK_SECTOR:           ds 1
 DAT_DISK_INT_SR0:          ds 1  ; used by FDC ISR to store result bytes of SENSEI command
 DAT_DISK_INT_CYLINDER:     ds 1  ;   "
+DAT_DISK_RES_BUFFER:       ds 8  ; used to store result bytes (max. 7, one slack)
+DAT_DISK_DATAPTR:          ds 2
+DAT_DISK_COMMAND:          ds 2
+DAT_DISK_RETRIES:          ds 1
 DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
 DAT_MON_REG_BUFFER:        ds 16
+DAT_SK_BUFFER:
 DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last
 
 

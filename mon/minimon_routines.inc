@@ -3,7 +3,7 @@
 ;  however some routines should be jumped to. these are marked MINIMON_J_...
 
 MINIMON_J_MAIN:           equ $0000
-MINIMON_J_MONITOR_TO_RAM: equ $0003
+MINIMON_MONITOR_TO_RAM:   equ $0003
 MINIMON_CONOUT:           equ $0006
 MINIMON_CONIN:            equ $0009
 MINIMON_CONST:            equ $000C

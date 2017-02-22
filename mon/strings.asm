@@ -5,7 +5,7 @@
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.3 FOR KIMP1', $0A
+    db 'MINIMON 0.4 FOR KIMP1', $0A
     db 'COPYLEFT 2017 ZALASUS', $0A
     db ' ALL WRONGS REVERSED', $0A, $00
     
@@ -26,6 +26,9 @@ str_diskError:
 
 str_fdcError:
     db 'DISK CONTROLLER ERROR', $0A, $00
+
+str_fdcWriteProtectedError:
+    db 'WRITE PROTECTED ERROR', $0A, $00
 
 str_noExtPresent:
     db 'NO '
@@ -88,7 +91,8 @@ str_disktoolHelp:
     db 'd D  Select disk D', $0A
     db 't T  Select track T', $0A
     db 's S  Select sector S', $0A
-    db 'r    Recalibrate', $0A
+    db 'r A  Read sector to A', $0A
+    db 'w A  Write sector from A', $0A
     db 'f[a] Format track, a for all tracks', $0A, $00
 
 endif

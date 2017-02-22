@@ -11,7 +11,7 @@
 
 
 ; Initializes the FDC. This routine will soft reset the FDC, set
-;  data rate and place the FDC in AT mode. 
+;  data rate and place the FDC in special mode. 
 fdc_init:
     ; initialize IVR to the dedicated restart vector
     ld A, IVR_FDC_DEF
@@ -24,10 +24,12 @@ fdc_init:
     ld (DAT_DISK_TRACK), A
     ld (DAT_DISK_NUMBER), A
     ld (DAT_DISK_MOTOR_DRIVE), A
+    ld HL, DAT_DISK_DATABUFFER
+    ld (DAT_DISK_DATAPTR), HL
 
     call fdc_reset
 
-    ; the soft reset will also have initialized AT mode
+    ; the soft reset will also have initialized special mode
 
     ; initialize data rate
     ; 125Kb/s @ FM for 16MHz default clock
@@ -39,8 +41,7 @@ fdc_init:
 
 
 ; Issues a soft reset to the FDC, thereby stopping any running commands.
-;  This will not affect the data rate setting or the mode, but when called
-;  on an FDC in hard reset mode, AT mode will be initialized.
+;  This will not affect the data rate setting, but will always initialize special mode
 fdc_reset:
     ; set all bits in operations register to 0,
     ;  including the active low /SRST bit.
@@ -48,14 +49,18 @@ fdc_reset:
     xor A
     out (IO_FDC_OPER), A
 
-    ld A, [1 << BIT_FDC_DMA_ENABLE] | [1 << BIT_FDC_SOFT_RESET] ; enable DMA and INT pins and lift reset condition
+    ; enable DMA and INT pins, select special mode and lift reset condition
+    ld A, [1 << BIT_FDC_DMA_ENABLE] | [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_MODE_SELECT]
     out (IO_FDC_OPER), A
+
+    in A, (IO_FDC_CONT) ; to initialize special mode
+
     ei
     hlt
 
     ; this will cause an interrupt that will be caught by ISR and cleared with
     ;  a SENSEI command. once we're through here, controller is reset and
-    ;  we are in AT mode
+    ;  we are in special mode
 
     ret
 
@@ -63,6 +68,8 @@ fdc_reset:
 
 ; Enables motor of selected drive and waits the spinup time.
 ;  If the right motor was already enabled, this method just returns.
+;  This uses a status byte in the data area:
+;     Bit 0 -> Drive Number, Bit 1 -> Motor On
 fdc_enableMotor:
     ; just set drive select bit appropriately and enable both motors.
     ;  only the selected drive should spin up
@@ -80,7 +87,7 @@ fdc_enableMotor:
 _fdc_enableMotor_turnOn:
     ld A, B
     and $01
-    or [1 << BIT_FDC_MOTOR_ENABLE_1] | [1 << BIT_FDC_MOTOR_ENABLE_2] | [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE]
+    or [1 << BIT_FDC_MOTOR_ENABLE_1] | [1 << BIT_FDC_MOTOR_ENABLE_2] | [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE] | [1 << BIT_FDC_MODE_SELECT]
     out (IO_FDC_OPER), A
 
     ; wait spinup time
@@ -100,7 +107,7 @@ _fdc_enableMotor_turnOn:
 fdc_disableMotor:
     ld A, (DAT_DISK_NUMBER)
     and $01
-    or [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE]
+    or [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE] | [1 << BIT_FDC_MODE_SELECT]
     out (IO_FDC_OPER), A
 
     xor A
@@ -110,18 +117,48 @@ fdc_disableMotor:
 
 
 
-; Turns on motors and creates timeout to disable them after 2 seconds.
+; Turns on motors and creates timeout to disable them after 3 seconds.
 ;  If called again before time is up, motors will stay enabled for
-;  another 2 seconds.
+;  another 3 seconds.
 fdc_motorSetup:
     ; first, enable and spin up motors (if neccessary)
     call fdc_enableMotor
 
-    ld DE, fdc_disableMotor
-    ld A, 128  ; turn off motor after 2 seconds
+    ld HL, fdc_disableMotor
+    ld A, 64*3  ; turn off motor after 3 seconds
     call rtc_setTimeout
 
     ret
+
+
+
+; Will execute the routine stored in HL repeatedly (for a maximum number
+;  of times) until it executes without errors. If a write-protect error
+;  is reported, it returns immediatly. If the maximum number of tries
+;  is exeeded, the error codes are returned just as the original routine
+;  would have.
+fdc_commandWithRetry:
+    ld (DAT_DISK_COMMAND), HL
+    ld A, CONF_DISK_MAX_RETRIES
+    ld (DAT_DISK_RETRIES), A
+
+_fdc_commandWithRetry_loop:
+    ld HL, _fdc_commandWithRetry_return
+    push HL
+    ld HL, (DAT_DISK_COMMAND)
+    jp (HL)
+_fdc_commandWithRetry_return:
+    ret nc
+    cp $02 ; write protect error code
+    ret z
+    ld B, A
+    ld A, (DAT_DISK_RETRIES)
+    dec A
+    ld (DAT_DISK_RETRIES), A
+    jp nz, _fdc_commandWithRetry_loop
+    ; no tries left
+    ld A, B
+    jp setCarryReturn
 
 
 
@@ -130,24 +167,25 @@ fdc_motorSetup:
 ;  stable operation (Load = 80ms, Step = 10ms, Unload = 16ms). DMA mode is disabled.
 fdc_specify:
     call fdc_preCommandCheck
-    ret c
+    jp c, fdc_commandError_invalidState
 
     ; specify command
     ld A, $03
     out (IO_FDC_DATA), A
 
     call fdc_waitForRFM
-    jp c, setCarryReturn
+    jp c, fdc_commandError_invalidState
     ld A, $51   ; unload time and step rate
-    out (IO_FDC_DATA), A    
+    out (IO_FDC_DATA), A
 
     call fdc_waitForRFM
-    jp c, setCarryReturn
+    jp c, fdc_commandError_invalidState
     ld A, [$28 << 1] | 1 ; load time and Non-DMA-Bit (set)
     out (IO_FDC_DATA), A
 
     ; no exec or result phase
 
+    xor A
     jp resetCarryReturn
 
 
@@ -166,7 +204,7 @@ fdc_senseInterruptStatus:
     in A, (IO_FDC_STAT)
     and [1 << BIT_FDC_BUSY] | [1 << BIT_FDC_REQUEST_FOR_MASTER] | [1 << BIT_FDC_DATA_INPUT]
     cp [1 << BIT_FDC_REQUEST_FOR_MASTER]
-    jp nz, setCarryReturn
+    jp nz, fdc_commandError_invalidState
 
     ; sense interrupt status command
     ld A, $08
@@ -176,26 +214,27 @@ fdc_senseInterruptStatus:
 
     ; read ST0
     call fdc_waitForRFM
-    jp nc, setCarryReturn   ; FDC should have two bytes to read now
+    jp nc, fdc_commandError_invalidState   ; FDC should have two bytes to read now
     in A, (IO_FDC_DATA)
     ld B, A
 
     ; read current cylinder index
     call fdc_waitForRFM
-    jp nc, setCarryReturn
+    jp nc, fdc_commandError_invalidState
     in A, (IO_FDC_DATA)
 
+    xor A
     jp resetCarryReturn
 
 
 
-; Recalibrates the selected drive. Drive is moved 
-;  to track 0 and controller internal track counters are reset.
+; Recalibrates the selected drive. Drive is moved to track 0 
+;  and controller internal track counters are reset.
 ;  If no errors occur, the carry bit is reset or set otherwise.
 ;  A will contain an FDC error code (see R/W commands)
 fdc_recalibrate:
     call fdc_preCommandCheck  ; make sure FDC accepts commands
-    ret c
+    jp c, fdc_commandError_invalidState
 
     call fdc_motorSetup
 
@@ -212,7 +251,7 @@ fdc_recalibrate:
     
     ; the FDC is stepping the drive now. we need to wait until stepping is finished
     ;  and head has has reached track 0.
-    call fdc_waitForExecEndIrq
+    call fdc_waitForSeekEnd
 
     ; stepping is finished. no result phase.
 
@@ -232,7 +271,7 @@ fdc_recalibrate:
 ; Positions the head of selected drive over selected track
 fdc_seek:
     call fdc_preCommandCheck
-    ret c
+    jp c, fdc_commandError_invalidState
 
     call fdc_motorSetup
 
@@ -255,7 +294,7 @@ fdc_seek:
 
     ; controller is stepping now. no bytes are transferred, so just wait for
     ;  IRQ at end of exec phase
-    call fdc_waitForExecEndIrq
+    call fdc_waitForSeekEnd
 
     ; no result phase.
 
@@ -278,6 +317,9 @@ fdc_seek:
 ;  state or $03 if the FDC reported errors after executing the command.
 fdc_readData:
     call fdc_preCommandCheck
+    jp c, fdc_commandError_invalidState
+
+    call fdc_motorSetup
 
     ; read command (including MT,MF & SK bits)
     ld A, $26  ; no multitrack, FM mode, skip deleted sectors
@@ -289,7 +331,7 @@ fdc_readData:
 
     ; all command bytes transferred. controller will start reading now
     call rtc_disableInterrupt ; make sure transfer is not interrupted
-    ld HL, DAT_DISK_DATABUFFER ; HL is used as target address during transfer
+    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call fdc_rTransfer
     call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
@@ -297,6 +339,7 @@ fdc_readData:
     call fdc_rwCommandStatusCheck
     ei ; rTransfer will leave interrupts deactivated. only reenable after result bytes have been read
     ret
+
 
 
 ; Writes data to the selected drive. Uses the parameters (track, sector, target
@@ -307,7 +350,7 @@ fdc_readData:
 ;  errors after executing the command.
 fdc_writeData:
     call fdc_preCommandCheck
-    ret c
+    jp c, fdc_commandError_invalidState
 
     call fdc_motorSetup
 
@@ -321,7 +364,7 @@ fdc_writeData:
 
     ; controller starts writing now
     call rtc_disableInterrupt ; make sure transfer is not interrupted
-    ld HL, DAT_DISK_DATABUFFER ; HL is used as target address during transfer
+    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     call fdc_wTransfer
     call rtc_enableInterrupt  ; turn back on so motors get disabled on time
 
@@ -336,12 +379,12 @@ fdc_writeData:
 ;  Error codes same as for write command.
 fdc_format:
     call fdc_preCommandCheck
-    ret c
+    jp c, fdc_commandError_invalidState
 
     ; prepare data buffer with address information
     ;  (C,H,R,N for each sector)
     ld HL, DAT_DISK_DATABUFFER
-    ld B, $0f   ; 15 loops for 15 sectors/track
+    ld B, $0f   ; 15 loops for 15 sectors/track  (3.5" floppy)
 _fdc_format_bufferLoop:
     ; Cylinder number
     ld A, (DAT_DISK_TRACK)
@@ -393,7 +436,7 @@ _fdc_format_bufferLoop:
     ;  again, this depends on drive type when formating. use value for 3.5" floppy again
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
-    ld A, $18  ; $18 ($1B ????) for 3.5" floppies  TODO: datasheet is really blurry. can't tell if 8 or B. fix pls.
+    ld A, $1B  ; for 3.5" floppies  (WD datasheet blurry. Value from GoldStar datasheet)
     out (IO_FDC_DATA), A
 
     ; data filler
@@ -459,7 +502,7 @@ fdc_rwCommand:
     ; end of track
     ;  Some sources say this is the sector count to be accessed, some say it's the final
     ;  sector address. The datasheet is not clear on that. Assume it's the address, so
-    ;  this is the same as sent as sector address
+    ;  this is the same as sent as sector address when we want to read/write only one sector
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
     ld A, (DAT_DISK_SECTOR)
@@ -482,74 +525,82 @@ fdc_rwCommand:
 
 
 
-; Checks the status bytes returned in result phase of a read/write or format command
-;  and sets the carry flag and error codes in A appropriately. Ensures data buffer is
-;  emptied if no state errors occur.
+; Loads the result data buffer with result bytes from the FDC. Then checks
+;  the status bytes returned in result phase of a read/write or format command
+;  and sets the carry flag and error codes in A appropriately.
 fdc_rwCommandStatusCheck:
+    call fdc_readResultBuffer
+    jp c, fdc_commandError_invalidState
+
     ; ST0
-    call fdc_waitForRFM
-    jp nc, fdc_commandError_invalidState
-    in A, (IO_FDC_DATA)
+    ld A, (DAT_DISK_RES_BUFFER)
     and [1 << BIT_FDC_INTERRUPT_CODE0] | [1 << BIT_FDC_INTERRUPT_CODE1]
-    jp nz, fdc_commandError_commandUnsuccessful  ; both IC bits must be zero
+    jp z, _fdc_rwCommandStatusCheck_success  ; if both IC bits are zero, command was successful. no need to check
+
+    ; if IC bits were not zero, something went wrong. check for exact cause
 
     ; ST1
-    call fdc_waitForRFM
-    jp nc, fdc_commandError_invalidState
-    in A, (IO_FDC_DATA)
+    ld A, (DAT_DISK_RES_BUFFER+1)
     bit BIT_FDC_NOT_WRITEABLE, A
     jp nz, fdc_commandError_writeProtected
-    or A  ; if any other bit is set, use generic fail error code
+    and $7f   ; ignore end-of-cylinder bit
     jp nz, fdc_commandError_commandUnsuccessful
+    ; Note: End of cylinder is not an error. Since the CPU is too slow to check the transferred byte count
+    ;  and issue a TC once a sector has been transferred, we set the end-of-track marker to the sector we want
+    ;  to read, which will cause the FDC to terminate the transfer after one sector, albeit with an End-of-Cylinder-error
 
     ; ST2
-    call fdc_waitForRFM
-    jp nc, fdc_commandError_invalidState
-    in A, (IO_FDC_DATA)
+    ld A, (DAT_DISK_RES_BUFFER+2)
     and $33  ; neither of these bits must be set (sorry, bitmask was to long)
     jp nz, fdc_commandError_commandUnsuccessful
 
-    ; address information after command. we can discard this
-    call fdc_emptyResultBuffer
-
+_fdc_rwCommandStatusCheck_success:
     xor A
     jp resetCarryReturn
 
 
 
+; Reads 7 result bytes from the FDC to the result data buffer.
+;  Carry flag used as error code (always indicates invalid state; A is not
+;  set accordingly)
+fdc_readResultBuffer:
+    ld HL, DAT_DISK_RES_BUFFER
+    ld B, 7  ; read all 7 result bytes
+
+_fdc_readResultBuffer_loop:
+    call fdc_waitForRFM
+    jp nc, setCarryReturn
+    in A, (IO_FDC_DATA)
+    ld (HL), A
+    inc HL
+    djnz _fdc_readResultBuffer_loop
+
+    jp resetCarryReturn
+    
+
+
 fdc_commandError_invalidState:
-    ; this error is probably urecoverable. no use in emptying the data
-    ;  buffer. let a reset handle this if neccessary
     ld A, $01
     jp setCarryReturn     
    
 fdc_commandError_writeProtected:
-    call fdc_emptyResultBuffer
     ld A, $02
     jp setCarryReturn
 
 fdc_commandError_commandUnsuccessful:
-    call fdc_emptyResultBuffer
     ld A, $03
     jp setCarryReturn
 
 
 
-; Checks MSR of FDC and returns if exec phase has ended. If not,
-;  waits for an IRQ and loops, checking again and so forth.
-;  Will leave interrupts in the enable state that they would have
-;  been if a simple hlt had been executed instead of this routine.
-;  If the interrupt calls an ISR that reactivates interrupts, interrupts
-;  will be active when this returns.
-fdc_waitForExecEndIrq:
+; Checks MSR repeatedly and returns if no drives are stepping anymore.
+;  This implies that an IRQ has been made and the ISR issued a SENSEI
+;  command, as only then the busy bits get reset.
+fdc_waitForSeekEnd:
     in A, (IO_FDC_STAT)
-    bit BIT_FDC_EXEC_MODE, A
-    ret z
-
-    ei
-    hlt
-
-    jp fdc_waitForExecEndIrq
+    and $1f ; all busy bits must be 0
+    jp nz, fdc_waitForSeekEnd  ; no halting here!! polling is safer since interrupts are handled async for seeks
+    ret
 
 
 
@@ -619,37 +670,26 @@ _fdc_wTransfer_loop:
 
 
 
-; Reads and discards bytes from the FDC data register until Request For Master is set and
-;  direction bit reports "waiting for input".
-fdc_emptyResultBuffer:
-    in A, (IO_FDC_STAT)
-    bit BIT_FDC_REQUEST_FOR_MASTER, A
-    jp z, fdc_emptyResultBuffer
-
-    bit BIT_FDC_DATA_INPUT, A
-    ret z ; DIO = 0 -> data register expects input. we are done
-    
-    in A, (IO_FDC_DATA)
-    jp fdc_emptyResultBuffer
-
-
-
 ; Checks initial condition for issuing commands to the FDC. If controller is busy,
-;  it will be reset. Then this routine waits for RQM signal and checks if DIO signal 
-;  is set to "input". If not, the controller will be reset and DIO checked again. 
-;  This will bring the controller in the right state eventually or just hang forever.
+;  it will be reset and busy state checked again. Then this routine checks for RQM 
+;  signal and if DIO signal is set to "input". If any of this fails, the carry flag
+;  will be set upon return or reset otherwise.
 fdc_preCommandCheck:
-    in A, (IO_FDC_STAT)
+    in A, (IO_FDC_STAT)  ; is controller busy? if yes -> reset
     bit BIT_FDC_BUSY, A
-    jp z, _fdc_preCommandCheck_wait
-    call fdc_reset
-
-_fdc_preCommandCheck_wait:
-    call fdc_waitForRFM
-    ret nc  ; if carry reset -> FDC awaits input. all ready
+    jp z, _fdc_preCommandCheck_checkRQM
 
     call fdc_reset
-    jp _fdc_preCommandCheck_wait
+    in A, (IO_FDC_STAT)   ; did resetting fix busy state?
+    bit BIT_FDC_BUSY, A
+    jp nz, setCarryReturn ; nope -> error. else check RQM and DIO state
+
+_fdc_preCommandCheck_checkRQM:
+    and [1 << BIT_FDC_REQUEST_FOR_MASTER] | [1 << BIT_FDC_DATA_INPUT]
+    cp [1 << BIT_FDC_REQUEST_FOR_MASTER]
+    jp nz, setCarryReturn
+    jp resetCarryReturn
+
 
 
 
