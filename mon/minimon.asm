@@ -34,7 +34,14 @@ CONF_UART_PRESCALE: equ 16      ; possible values are 1, 16 and 64
 CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
 
 ; Floppy disk configuration
-CONF_DISK_MAX_RETRIES:      equ 8
+CONF_DISK_MAX_RETRIES:        equ 8
+CONF_DISK_USE_MFM:            equ 1    ; 0 for FM, 1 for MFM
+CONF_DISK_BYTES_PER_SECTOR:   equ 512  ; 256, 512 or 128 (the latter only in FM mode)
+CONF_DISK_TRACK_COUNT:        equ 80
+
+; Boot config
+CONF_BOOT_LOCATION:           equ $2200 ; default location of the bootloader
+CONF_BOOT_SIGNATURE:          equ $BEEF
 
 
 
@@ -104,10 +111,10 @@ endif
     jp clearScreen
     jp printHex
     jp readHex
-    jp 0
-    jp 0
-    jp 0
-    jp 0
+    jp selectDisk
+    jp seek
+    jp readData
+    jp writeData
     jp 0
     jp monitorPrompt_loop
 
@@ -673,6 +680,44 @@ restoreRegisterStash:
     
 
 
+; The following methods provide a disk interface for the monitor jump table
+
+; Selects and recalibrates the disk given by A
+selectDisk:
+    ld (DAT_DISK_NUMBER), A
+    call fdc_recalibrate
+    ret
+
+
+
+; Seeks the currently selected disk to the track given by A
+seek:
+    ld (DAT_DISK_TRACK), A
+    call fdc_seek
+    ret
+
+
+
+; Reads the sector given by A to the location given by HL
+readData:
+    ld (DAT_DISK_SECTOR), A
+    ld (DAT_DISK_DATAPTR), HL
+    ld HL, fdc_readData
+    call fdc_commandWithRetry
+    ret
+
+
+
+; Writes the data pointed to by HL to the sector given in A
+writeData:
+    ld (DAT_DISK_SECTOR), A
+    ld (DAT_DISK_DATAPTR), HL
+    ld HL, fdc_writeData
+    call fdc_commandWithRetry
+    ret
+
+
+
 ;------------------------- MAIN MONITOR LOOP --------------------------------     
    
 monitorStart:
@@ -899,7 +944,80 @@ command_register:
     jp z, _command_register_print
 
     ; user supplied arguments -> modify stash
+_command_register_modLoop:
+    ld B, (HL) 
+    inc HL
+    dec C
+    call skipWhites
+    ld A, (HL)
+    cp '='
+    jp nz, monitor_syntaxError
+    inc HL
+    dec C
+    ld A, B
+
+    ; determine which register to modify
+    ld IX, DAT_MON_REG_BUFFER+1
+    cp 'A'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'C'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'B'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'E'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'D'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'L'
+    jr z, _command_register_mod8
+
+    inc IX
+    cp 'H'
+    jr z, _command_register_mod8
+
+    ld IX, DAT_MON_REG_BUFFER+10
+    cp 'X'
+    jr z, _command_register_mod16
+
+    ld IX, DAT_MON_REG_BUFFER+12
+    cp 'Y'
+    jr z, _command_register_mod16
     
+    ld IX, DAT_MON_REG_BUFFER+14
+    cp 'I'
+    jr z, _command_register_mod8
+
+    jp monitor_syntaxError
+
+_command_register_mod8:
+    call expression
+    jp c, monitor_syntaxError
+    ld (IX+0), E
+    jp _command_register_modLoopCheck
+
+_command_register_mod16:
+    call expression
+    jp c, monitor_syntaxError
+    ld (IX+0), E
+    ld (IX+1), D
+
+_command_register_modLoopCheck:
+    call skipWhites
+    ld A, C
+    or A
+    jp nz, _command_register_modLoop
+    ;jp monitorPrompt_loop
+    ; commented so reg stash gets printed after mods are made
 
 _command_register_print:
     ld IX, DAT_MON_REG_BUFFER
@@ -1105,18 +1223,46 @@ command_boot:
     cp $ff
     jp z, _command_boot_cont
 
-    ; board is not present (on startup). print error
+    ; board is not present (or was not on startup). print error
     ld HL, str_noExtPresent
     call printString
     jp monitorPrompt_loop
 
 _command_boot_cont:
-    ld HL, str_notImplemented
-    call printString
-    jp monitorPrompt_loop
+    ; seek drive A/0 to track 0
+    xor A
+    ld (DAT_DISK_NUMBER), A
+    call fdc_recalibrate
+    jp c, _command_disk_error  ; re-use disktool error routine
 
-_command_boot_error:
-    ld HL, str_fdcError
+    ld HL, CONF_BOOT_LOCATION
+    ld (DAT_DISK_DATAPTR), HL
+    ld A, 1
+    ld (DAT_DISK_SECTOR), A
+    ld HL, fdc_readData
+    call fdc_commandWithRetry
+    jp c, _command_disk_error
+
+    ; read without errors. check if code has boot signature
+    ld HL, (CONF_BOOT_LOCATION + CONF_DISK_BYTES_PER_SECTOR - 2)
+    ld A, H
+    cp high CONF_BOOT_SIGNATURE
+    jp nz, _command_boot_notBootable
+    ld A, L
+    cp low CONF_BOOT_SIGNATURE
+    jp nz, _command_boot_notBootable
+
+    ; disable motors before handing over control in case
+    ;  the bootloader messes with the interrupts or RTC. we don't want the motors
+    ;  to stay enabled forever until the next disk access
+    call rtc_deleteTimeout
+    call fdc_disableMotor
+
+    ; give control to whatever we just loaded (hopefully a bootloader)
+    jp CONF_BOOT_LOCATION
+
+_command_boot_notBootable:
+    ld HL, str_notBootable
     call printString
     jp monitorPrompt_loop
 
@@ -1625,7 +1771,7 @@ command_disk:
 _command_disk_help:
     ld HL, str_disktoolHelp
     call printString
-    jp monitorPrompt_loop ; ignore all other characters after help
+    jp monitorPrompt_loop
 
 _command_disk_selDisk:
     call expression
@@ -1636,7 +1782,7 @@ _command_disk_selDisk:
     jp c, _command_disk_error
     call fdc_recalibrate
     jp c, _command_disk_error
-    jp _command_disk_end
+    jp monitorPrompt_loop
 
 _command_disk_selTrack:
     call expression
@@ -1645,14 +1791,14 @@ _command_disk_selTrack:
     ld (DAT_DISK_TRACK), A
     call fdc_seek
     jp c, _command_disk_error
-    jp _command_disk_end
+    jp monitorPrompt_loop
 
 _command_disk_selSector:
     call expression
     jp c, monitor_syntaxError
     ld A, E
     ld (DAT_DISK_SECTOR), A
-    jp _command_disk_end
+    jp monitorPrompt_loop
 
 _command_disk_read:
     call expression
@@ -1661,7 +1807,7 @@ _command_disk_read:
     ld HL, fdc_readData
     call fdc_commandWithRetry
     jp c, _command_disk_error
-    jp _command_disk_end
+    jp monitorPrompt_loop
 
 _command_disk_write:
     call expression
@@ -1670,25 +1816,35 @@ _command_disk_write:
     ld HL, fdc_writeData
     call fdc_commandWithRetry
     jp c, _command_disk_error
-    jp _command_disk_end
+    jp monitorPrompt_loop
 
 _command_disk_format:
     call skipWhites
     ld A, (HL)
     cp 'a'
-    jp nz, _command_disk_format_notAll
-    inc HL
-    dec C
-    ; TODO: add code to format all tracks here
-_command_disk_format_notAll:
+    jp nz, _command_disk_format_single
+    
+    xor A
+    ld (DAT_DISK_TRACK), A
+_command_disk_format_allLoop:
+    call fdc_seek
+    jp c, _command_disk_error
     ld HL, fdc_format
     call fdc_commandWithRetry
     jp c, _command_disk_error
-    jp _command_disk_end
+    ld A, (DAT_DISK_TRACK)
+    inc A
+    ld (DAT_DISK_TRACK), A
+    cp CONF_DISK_TRACK_COUNT
+    jp nz, _command_disk_format_allLoop
+    dec A  ; track count is not the actual track we're on (0 based)
+    ld (DAT_DISK_TRACK), A
+    jp monitorPrompt_loop
 
-_command_disk_end:
-    ; would have looped here, but HL and C might have changed and
-    ;  i don't want to mess around with stashing them
+_command_disk_format_single:
+    ld HL, fdc_format
+    call fdc_commandWithRetry
+    jp c, _command_disk_error
     jp monitorPrompt_loop
 
 _command_disk_error_extNotInitialized:
@@ -1813,10 +1969,10 @@ DAT_DISK_RES_BUFFER:       ds 8  ; used to store result bytes (max. 7, one slack
 DAT_DISK_DATAPTR:          ds 2
 DAT_DISK_COMMAND:          ds 2
 DAT_DISK_RETRIES:          ds 1
-DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
 DAT_MON_REG_BUFFER:        ds 16
 DAT_SK_BUFFER:
-DAT_DISK_DATABUFFER:       ds 128  ; this may grow downwards quite a bit. always keep last
+DAT_INPUT_BUFFER:          ds MON_INPUT_BUFFER_SIZE ; command line input buffer in HIMEM
+DAT_DISK_DATABUFFER:       ds CONF_DISK_BYTES_PER_SECTOR  ; this may grow downwards quite a bit. always keep last
 
 
     end main

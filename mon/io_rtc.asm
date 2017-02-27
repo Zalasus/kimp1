@@ -1,6 +1,12 @@
 
 
-;---------------------------- RTC ACCESS ------------------------------
+;=========================================
+;
+;          RTC IO for Minimon
+;
+;    for the MSM6242B real time clock
+;
+;=========================================
 
 ; Initializes the RTC, including the IVR etc.
 rtc_init:
@@ -96,6 +102,7 @@ _rtc_printTime_done:
 
 ; Uses the RTC interrupt to delay a time interval given by A. The delay time
 ;  equals A*1/64 seconds +/- a few clock cycles. Will enable interrupts.
+;  Any pending timouts will be deleted.
 rtc_delay:
     di
 

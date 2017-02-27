@@ -30,6 +30,9 @@ str_fdcError:
 str_fdcWriteProtectedError:
     db 'WRITE PROTECTED ERROR', $0A, $00
 
+str_notBootable:
+    db 'NOT BOOTABLE', $0A, $00
+
 str_noExtPresent:
     db 'NO '
 str_extPresent:
@@ -69,22 +72,21 @@ str_help:
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
     db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
-    db 'f[R=X]     Print or modify flag and register stash', $0A
+    db 'f [R=X]*   Print or modify flag and register stash', $0A
     db 'c S, D, C  Copy C bytes from S to D', $0A
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A
     db 'v          Show version', $0A
     db 'h          Show this message', $0A
-    db 'p X        Parses and prints X', $0A
+    db 'p X*       Parses and prints X', $0A
     db 'i          Starts reading of Intel HEX', $0A
     db 'o S [,E]   Dumps S to E as Intel HEX', $0A
-    db 'd          Disk tool. Use dh for help', $0A
+    db 'd *        Disk tool. Use dh for help', $0A
     db 'r          Soft reset', $0A
     db 'Arguments in square brackets optional', $0A
     db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
     db '$ is the last parsed number', $0A
-    db 'Numbers interpreted as hexadecimal', $0A
-    db 'Prefix with # for decimal', $0A, $00
+    db 'Numbers interpreted as hexadecimal, prefix with # for decimal', $0A, $00
 
 str_disktoolHelp:
     db 'h    Show this message', $0A

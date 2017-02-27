@@ -12,9 +12,9 @@ MINIMON_READSTRING:       equ $0012
 MINIMON_CLS:              equ $0015
 MINIMON_PRINTHEX:         equ $0018
 MINIMON_READHEX:          equ $001B
-;MINIMON_                 equ $001E
-;MINIMON_                 equ $0021
-;MINIMON_                 equ $0024
-;MINIMON_                 equ $0027
+MINIMON_SELECTDISK        equ $001E
+MINIMON_SEEK              equ $0021
+MINIMON_READDATA          equ $0024
+MINIMON_WRITEDATA         equ $0027
 ;MINIMON_                 equ $002A
 MINIMON_J_BACK_TO_PROMPT: equ $002D
