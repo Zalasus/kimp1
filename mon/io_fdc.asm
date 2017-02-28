@@ -9,6 +9,9 @@
 ;=============================================
 
 
+; All following routines can trash A, B and HL. C and DE are preserved.
+
+
 ; determine parameters from config. values taken from table in WD37C65 datasheet.
 ;  these are for microfloppies only. they probably won't work on any other drive type
 
@@ -44,6 +47,8 @@ if CONF_DISK_BYTES_PER_SECTOR == 512
 endif
 
 
+FDC_SECTORS_PER_CYLINDER: equ FDC_PARAM_SC*2  ; since we're mapping the head into sector address
+
 
 ; Initializes the FDC. This routine will soft reset the FDC, set
 ;  data rate and place the FDC in special mode. 
@@ -57,6 +62,7 @@ fdc_init:
     ld (DAT_DISK_SECTOR), A
     xor A
     ld (DAT_DISK_TRACK), A
+    ld (DAT_DISK_HEAD), A
     ld (DAT_DISK_NUMBER), A
     ld (DAT_DISK_MOTOR_DRIVE), A
     ld HL, DAT_DISK_DATABUFFER
@@ -102,6 +108,7 @@ fdc_reset:
 ;  If the right motor was already enabled, this method just returns.
 ;  This uses a status byte in the data area:
 ;     Bit 0 -> Drive Number, Bit 1 -> Motor On
+;  Creates a timeout that turns the motor off again after 3 seconds.
 fdc_enableMotor:
     ; just set drive select bit appropriately and enable both motors.
     ;  only the selected drive should spin up
@@ -114,7 +121,7 @@ fdc_enableMotor:
     bit 0, A
     jp z, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
     ; right motor was already on. we're done
-    ret
+    jp _fdc_enableMotor_end
     
 _fdc_enableMotor_turnOn:
     ld A, B
@@ -131,6 +138,12 @@ _fdc_enableMotor_turnOn:
     or B
     ld (DAT_DISK_MOTOR_DRIVE), A
 
+_fdc_enableMotor_end:
+    ; create timeout to disable motor again
+    ld HL, fdc_disableMotor
+    ld A, 64*3  ; turn off motor after 3 seconds
+    call rtc_setTimeout
+
     ret
 
 
@@ -144,21 +157,6 @@ fdc_disableMotor:
 
     xor A
     ld (DAT_DISK_MOTOR_DRIVE), A
-
-    ret
-
-
-
-; Turns on motors and creates timeout to disable them after 3 seconds.
-;  If called again before time is up, motors will stay enabled for
-;  another 3 seconds.
-fdc_motorSetup:
-    ; first, enable and spin up motors (if neccessary)
-    call fdc_enableMotor
-
-    ld HL, fdc_disableMotor
-    ld A, 64*3  ; turn off motor after 3 seconds
-    call rtc_setTimeout
 
     ret
 
@@ -267,7 +265,7 @@ fdc_recalibrate:
     call fdc_preCommandCheck  ; make sure FDC accepts commands
     jp c, fdc_commandError_invalidState
 
-    call fdc_motorSetup
+    call fdc_enableMotor
 
     ; recalibrate command
     ld A, $07 
@@ -288,9 +286,8 @@ fdc_recalibrate:
 
     ; load interrupt status byte as received by ISR
     ld A, (DAT_DISK_INT_SR0)
-    bit BIT_FDC_SEEK_END, A
-    jp z, fdc_commandError_commandUnsuccessful
-    bit BIT_FDC_EQUIPMENT_CHECK, A
+    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
+    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
     jp nz, fdc_commandError_commandUnsuccessful
 
     xor A
@@ -304,7 +301,7 @@ fdc_seek:
     call fdc_preCommandCheck
     jp c, fdc_commandError_invalidState
 
-    call fdc_motorSetup
+    call fdc_enableMotor
 
     ; seek command
     ld A, $0f
@@ -314,7 +311,7 @@ fdc_seek:
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
     ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0
+    and $03  ; mask out lower 2 bits. Head select is always 0 (can't step heads individually)
     out (IO_FDC_DATA), A
 
     ; cylinder address
@@ -331,9 +328,8 @@ fdc_seek:
 
     ; load interrupt status byte as received by ISR
     ld A, (DAT_DISK_INT_SR0)
-    bit BIT_FDC_SEEK_END, A
-    jp z, fdc_commandError_commandUnsuccessful
-    bit BIT_FDC_EQUIPMENT_CHECK, A
+    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
+    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
     jp nz, fdc_commandError_commandUnsuccessful
 
     xor A
@@ -350,7 +346,7 @@ fdc_readData:
     call fdc_preCommandCheck
     jp c, fdc_commandError_invalidState
 
-    call fdc_motorSetup
+    call fdc_enableMotor
 
     ; read command (including MT,MF & SK bits)
 if CONF_DISK_USE_MFM == 0
@@ -387,7 +383,7 @@ fdc_writeData:
     call fdc_preCommandCheck
     jp c, fdc_commandError_invalidState
 
-    call fdc_motorSetup
+    call fdc_enableMotor
 
     ; write command (including MT & MF bits)
 if CONF_DISK_USE_MFM == 0
@@ -430,7 +426,7 @@ _fdc_format_bufferLoop:
     ld (HL), A
     inc HL
     ; Head number
-    xor A  ; head is always 0 for now  TODO: make both sides of disk usable
+    ld A, (DAT_DISK_HEAD)
     ld (HL), A
     inc HL
     ; Sector number (calculate from loop index, first sector has index 1)
@@ -444,7 +440,7 @@ _fdc_format_bufferLoop:
     inc HL
     djnz _fdc_format_bufferLoop
     
-    call fdc_motorSetup
+    call fdc_enableMotor
 
     ; format track command (including MF bits)
 if CONF_DISK_USE_MFM == 0
@@ -457,8 +453,13 @@ endif
     ; unit & head address
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
+    ld A, (DAT_DISK_HEAD)
+    rlca ; shift left head address by 2
+    rlca
+    ld B, A
     ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0
+    and $03  ; mask out lower 2 bits
+    or B     ; or-in head address
     out (IO_FDC_DATA), A
 
     ; bytes per sector
@@ -511,11 +512,29 @@ endif
 ;  method. Error states are handled appropriately. If this routine returns with carry set,
 ;  the calling routine may return immediately and should not modify A to preserve the error code.
 fdc_rwCommand:
+    ; since we map the head address into the sector number for R/W commands we need to
+    ;  calculate the actual head address and sector number here
+    xor A  ; assume head 0 initially
+    ld (DAT_DISK_HEAD), A 
+    ld A, (DAT_DISK_SECTOR)
+    sub FDC_PARAM_SC + 1    ; subtract one more so sector=SC comes out negative (sector is 0 based)
+    jp m, _fdc_rwCommand_mappingDone
+    inc A                   ; correct the one sector we subtracted too much
+    ld (DAT_DISK_SECTOR), A
+    ld A, 1
+    ld (DAT_DISK_HEAD), A
+_fdc_rwCommand_mappingDone:
+
     ; unit & head address
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
+    ld A, (DAT_DISK_HEAD)
+    rlca ; shift left head address by 2
+    rlca
+    ld B, A
     ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0 TODO: add support for both sides
+    and $03  ; mask out lower 2 bits
+    or B     ; or-in head address
     out (IO_FDC_DATA), A
 
     ; cylinder address
@@ -527,7 +546,7 @@ fdc_rwCommand:
     ; head address (repeated value, same as in unit address)
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
-    xor A ; head is always 0 for now
+    ld A, (DAT_DISK_HEAD)
     out (IO_FDC_DATA), A
     
     ; sector address
@@ -543,9 +562,9 @@ fdc_rwCommand:
     out (IO_FDC_DATA), A
 
     ; end of track
-    ;  Some sources say this is the sector count to be accessed, some say it's the final
-    ;  sector address. The datasheet is not clear on that. Assume it's the address, so
-    ;  this is the same as sent as sector address when we want to read/write only one sector
+    ;  If the controller reads past this, it will terminate the command with
+    ;  an end-of-cylinder error. since we can't keep track of sector count during
+    ;  read this is exactly what we want
     call fdc_waitForRFM
     jp c, fdc_commandError_invalidState
     ld A, (DAT_DISK_SECTOR)
@@ -653,10 +672,10 @@ fdc_waitForSeekEnd:
 
 
 
-; Experimental half polling/half IRQ routine for read data transfer. Uses interrupts
-;  in mode 0 to wait for the FDC. Transfers data read from the FDC to the buffer pointed
-;  by (HL), growing upwards. There is no bounds checking. Transfer ends when controller ends it.
-;  Trashes B,C,D. When finished, HL points to the location AFTER where the last byte was stored.
+; Half polling/half IRQ routine for read data transfer. Uses interrupts in mode 0 to wait for the FDC.
+;  Transfers data read from the FDC to the buffer pointed by (HL), growing upwards. 
+;  There is no bounds checking. Transfer ends when controller ends it.
+;  When finished, HL points to the location AFTER where the last byte was stored.
 ;  Since this routine has some overhead before actually able to react to IRQs, the controller may 
 ;  be overrun when it locks the PLL and finds the start sector faster than this routine can enter
 ;  it's transfer loop. This, however, seems unlikely to happen in practice.
@@ -665,12 +684,16 @@ fdc_rTransfer:
     ;  without the cycle penalty of calling an ISR. When HLT is lifted, the CPU will execute a NOP
     ;  for 6 cycles and then continue after the HLT. This is faster and more elegant than polling the MSR
     ld A, IVR_FDC_NOP
-    out (IO_IVR_FDC), A     
+    out (IO_IVR_FDC), A
+
+    exx  ; exx use alternative registers so we don't trash so much
 
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
 
     call _fdc_rTransfer_loop ; call loop instead of jumping to it. a conditional return is faster than a branch
+
+    exx
 
     ; restore original IVR contents
     ld A, IVR_FDC_DEF
@@ -697,10 +720,14 @@ fdc_wTransfer:
     ld A, IVR_FDC_NOP
     out (IO_IVR_FDC), A
 
+    exx
+
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for outi instruction (again used for speed)
 
     call _fdc_wTransfer_loop
+
+    exx
 
     ld A, IVR_FDC_DEF
     out (IO_IVR_FDC), A
@@ -738,7 +765,6 @@ _fdc_preCommandCheck_checkRQM:
     cp [1 << BIT_FDC_REQUEST_FOR_MASTER]
     jp nz, setCarryReturn
     jp resetCarryReturn
-
 
 
 

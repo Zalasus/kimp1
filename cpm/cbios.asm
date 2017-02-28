@@ -79,16 +79,16 @@ DAT_CPM_DPH_BASE:  ; base address for disk parameter header
 
 ; Disk parameter block for allocation block size of 2kiB
 DAT_CPM_DPB:
-    dw 36    ; count of 128-byte sectors per track
+    dw 72    ; count of 128-byte sectors per track (2 * 9 * 512/128)
     db 4     ; block shift factor
     db $0f   ; block mask
     db 0     ; extent mask
-    dw 355   ; storage capacity (index of last allocation block, 0-based)
-    dw 511   ; number of last directory entry
-    db $ff   ; allocation table stuff
+    dw 354   ; storage capacity (index of last allocation block, 0-based)  (2*9*512*79)/2048-1
+    dw 255   ; number of last directory entry
+    db $f0   ; mask for reserved directory blocks (we need 4 blocks to store 256 entries of 32 bytes)
     db $00   ;     "
-    db 128   ; checksum vector size
-    dw 2     ; number of reserved track at start of disk
+    db 64    ; checksum vector size
+    dw 1     ; number of reserved track at start of disk
 
 
 
@@ -135,7 +135,7 @@ wboot:
     xor A
     ld (DAT_DISK_NUMBER), A
     ld (DAT_DISK_TRACK), A
-    ld A, 2   ; we reserve sector 1 for later. a dedicated bootloader perhaps
+    ld A, 2   ; sector 1 stores bootloader. ignore it
     ld (DAT_DISK_SECTOR), A
 
     ld C, 0   ; number of sectors loaded
@@ -167,7 +167,7 @@ _wboot_noError:
     ld A, (DAT_DISK_SECTOR)
     inc A
     ld (DAT_DISK_SECTOR), A
-    cp 10     ; check if carry to next track is neccessary
+    cp 19     ; check if carry to next track is neccessary
     jp nz, _wboot_loop
     ld A, 1
     ld (DAT_DISK_SECTOR), A
@@ -434,6 +434,9 @@ setCarryReturn:
 ;
 ; for the WD37C65 floppy subsystem controller
 ;
+; NOTE: this is a stripped down version of
+;       Minimon's driver
+;
 ;=============================================
 
 
@@ -503,7 +506,7 @@ _fdc_enableMotor_turnOn:
     ld (DAT_DISK_MOTOR_DRIVE), A
 
 _fdc_enableMotor_end:
-    ; create timeout do disable motor again
+    ; create timeout to disable motor again
     ld HL, fdc_disableMotor
     ld A, 64*3  ; turn off motor after 3 seconds
     call rtc_setTimeout
@@ -581,7 +584,6 @@ fdc_senseInterruptStatus:
 ; Recalibrates the selected drive. Drive is moved to track 0 
 ;  and controller internal track counters are reset.
 ;  If no errors occur, the carry bit is reset or set otherwise.
-;  A will contain an FDC error code (see R/W commands)
 fdc_recalibrate:
     call fdc_preCommandCheck  ; make sure FDC accepts commands
     ret c
@@ -606,9 +608,8 @@ fdc_recalibrate:
 
     ; load interrupt status byte as received by ISR
     ld A, (DAT_DISK_INT_SR0)
-    bit BIT_FDC_SEEK_END, A
-    jp z, setCarryReturn
-    bit BIT_FDC_EQUIPMENT_CHECK, A
+    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
+    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
     jp nz, setCarryReturn
 
     xor A
@@ -632,7 +633,7 @@ fdc_seek:
     ; unit & head address
     call fdc_waitForRFM
     ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0
+    and $03  ; mask out lower 2 bits. Head select is always 0 (can't step heads individually)
     out (IO_FDC_DATA), A
 
     ; cylinder address
@@ -648,9 +649,8 @@ fdc_seek:
 
     ; load interrupt status byte as received by ISR
     ld A, (DAT_DISK_INT_SR0)
-    bit BIT_FDC_SEEK_END, A
-    jp z, setCarryReturn
-    bit BIT_FDC_EQUIPMENT_CHECK, A
+    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
+    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
     jp nz, setCarryReturn
 
     jp resetCarryReturn
@@ -659,9 +659,7 @@ fdc_seek:
 
 ; Reads data from the selected drive. Uses the parameters (track, sector, target
 ;  data buffer etc.) as specified in the respective data area fields.
-;  If reading succeeds, the carry flag is reset and A will contain $00. If any
-;  error occurs, carry wil be set and A contains $01 if the FDC was in an invalid
-;  state or $03 if the FDC reported errors after executing the command.
+;  If reading succeeds, the carry flag is reset. If any error occurs, carry wil be set.
 fdc_readData:
     call fdc_preCommandCheck
     ret c
@@ -685,10 +683,7 @@ fdc_readData:
 
 ; Writes data to the selected drive. Uses the parameters (track, sector, target
 ;  data buffer etc.) as specified in the respective data area fields.
-;  If writing succeeds, the carry flag is reset and A will contain $00. If any
-;  error occurs, carry wil be set and A contains $01 if the FDC was in an invalid
-;  state, $02 if the selected disk was write protected or $03 if the FDC reported
-;  errors after executing the command.
+;  If writing succeeds, the carry flag is reset. If any error occurs, carry wil be set.
 fdc_writeData:
     call fdc_preCommandCheck
     ret c
@@ -715,12 +710,30 @@ fdc_writeData:
 ;  command byte has to be issued to the FDC by the caller to differentiate between R/W.
 ;  This routine returns right before the caller should call the appropriate transfer
 ;  method. Error states are handled appropriately. If this routine returns with carry set,
-;  the calling routine may return immediately and should not modify A to preserve the error code.
+;  the calling routine may return immediately.
 fdc_rwCommand:
+    ; since we map the head address into the sector number for R/W commands we need to
+    ;  calculate the actual head address and sector number here
+    xor A  ; assume head 0 initially
+    ld (DAT_DISK_HEAD), A 
+    ld A, (DAT_DISK_SECTOR)
+    sub FDC_PARAM_SC + 1    ; subtract one more so sector=SC comes out negative (sector is 0 based)
+    jp m, _fdc_rwCommand_mappingDone
+    inc A                   ; correct the one sector we subtracted too much
+    ld (DAT_DISK_SECTOR), A
+    ld A, 1
+    ld (DAT_DISK_HEAD), A
+_fdc_rwCommand_mappingDone:
+
     ; unit & head address
     call fdc_waitForRFM
+    ld A, (DAT_DISK_HEAD)
+    rlca ; shift left head address by 2
+    rlca
+    ld B, A
     ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0 TODO: add support for both sides
+    and $03  ; mask out lower 2 bits
+    or B     ; or-in head address
     out (IO_FDC_DATA), A
 
     ; cylinder address
@@ -730,7 +743,7 @@ fdc_rwCommand:
 
     ; head address (repeated value, same as in unit address)
     call fdc_waitForRFM
-    xor A ; head is always 0 for now
+    ld A, (DAT_DISK_HEAD)
     out (IO_FDC_DATA), A
     
     ; sector address
@@ -744,9 +757,9 @@ fdc_rwCommand:
     out (IO_FDC_DATA), A
 
     ; end of track
-    ;  Some sources say this is the sector count to be accessed, some say it's the final
-    ;  sector address. The datasheet is not clear on that. Assume it's the address, so
-    ;  this is the same as sent as sector address when we want to read/write only one sector
+    ;  If the controller reads past this, it will terminate the command with
+    ;  an end-of-cylinder error. since we can't keep track of sector count during
+    ;  read this is exactly what we want
     call fdc_waitForRFM
     ld A, (DAT_DISK_SECTOR)
     out (IO_FDC_DATA), A
@@ -822,15 +835,14 @@ fdc_waitForSeekEnd:
 
 
 
-; Experimental half polling/half IRQ routine for read data transfer. Uses interrupts
-;  in mode 0 to wait for the FDC. Transfers data read from the FDC to the buffer pointed
-;  by (HL), growing upwards. There is no bounds checking. Transfer ends when controller ends it.
-;  Trashes B,C,D. When finished, HL points to the location AFTER where the last byte was stored.
+; Half polling/half IRQ routine for read data transfer. Uses interrupts in mode 0 to wait for the FDC.
+;  Transfers data read from the FDC to the buffer pointed by (HL), growing upwards. 
+;  There is no bounds checking. Transfer ends when controller ends it.
+;  When finished, HL points to the location AFTER where the last byte was stored.
 ;  Since this routine has some overhead before actually able to react to IRQs, the controller may 
 ;  be overrun when it locks the PLL and finds the start sector faster than this routine can enter
 ;  it's transfer loop. This, however, seems unlikely to happen in practice.
 fdc_rTransfer:
-    exx  ; use alternative registers for transfer so we trash less
     call rtc_disableInterrupt ; make sure transfer is not interrupted
 
     ; Initialize IVR to a NOP so we can use the HLT instruction in IM0 to wait for the IRQ
@@ -839,11 +851,15 @@ fdc_rTransfer:
     ld A, $00
     out (IO_IVR_FDC), A  
 
+    exx  ; use alternative registers for transfer so we trash less
+
     ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
     ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
 
     call _fdc_rTransfer_loop ; call loop instead of jumping to it. a conditional return is faster than a branch
+
+    exx
 
     ; restore original IVR contents
     ld A, INT_FDC_RESTART
@@ -851,7 +867,6 @@ fdc_rTransfer:
 
     call rtc_enableInterrupt
 
-    exx
     ret
 
 ; time critical part begins here
@@ -870,12 +885,13 @@ _fdc_rTransfer_loop:
 ; Initiates an IRQ-driven data transfer to the FDC from the location pointed to by (HL).
 ;  Same details apply as to read routine above.
 fdc_wTransfer:
-    exx
     call rtc_disableInterrupt ; make sure transfer is not interrupted
 
     ; initialize IVR to alternative NOP since we want to save cycles
     ld A, $00
     out (IO_IVR_FDC), A
+
+    exx
 
     ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
     ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
@@ -883,12 +899,13 @@ fdc_wTransfer:
 
     call _fdc_wTransfer_loop
 
+    exx
+
     ld A, INT_FDC_RESTART
     out (IO_IVR_FDC), A
 
     call rtc_enableInterrupt
 
-    exx
     ret
 
 ; time critical part begins here
@@ -1115,6 +1132,9 @@ DAT_DISK_INT_SR0:
 DAT_DISK_TRACK:
     ds 1
 
+DAT_DISK_HEAD:
+    ds 1
+
 DAT_DISK_SECTOR:
     ds 1
 
@@ -1132,13 +1152,13 @@ DAT_CPM_DMAPTR:
     ds 2
 
 DAT_CPM_CSV_0:
-    ds 128
+    ds 64
 
 DAT_CPM_ALV_0:
     ds 46
 
 DAT_CPM_CSV_1:
-    ds 128
+    ds 64
 
 DAT_CPM_ALV_1:
     ds 46

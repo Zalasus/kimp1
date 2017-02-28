@@ -89,13 +89,13 @@ str_help:
     db 'Numbers interpreted as hexadecimal, prefix with # for decimal', $0A, $00
 
 str_disktoolHelp:
-    db 'h    Show this message', $0A
-    db 'd D  Select disk D', $0A
-    db 't T  Select track T', $0A
-    db 's S  Select sector S', $0A
-    db 'r A  Read sector to A', $0A
-    db 'w A  Write sector from A', $0A
-    db 'f[a] Format track, a for all tracks', $0A, $00
+    db 'h        Show this message', $0A
+    db 'd D      Select disk D', $0A
+    db 't T      Select track T', $0A
+    db 's S      Select sector S', $0A
+    db 'r A[,N]  Read N sectors to A', $0A
+    db 'w A[,N]  Write N sectors from A', $0A
+    db 'f        Format selected disk', $0A, $00
 
 endif
     

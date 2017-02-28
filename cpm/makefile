@@ -19,7 +19,7 @@ bin/cpm22_trimmed.bin: zout/cpm22.cim
 
 bin/cpm22_full.bin: bin/cpm22_trimmed.bin zout/cbios.cim zout/bootloader.cim
 	cat zout/bootloader.cim bin/cpm22_trimmed.bin zout/cbios.cim > bin/cpm22_full.bin
-	objcopy -I binary -O ihex --change-addresses=20480 bin/cpm22_full.bin bin/cpm22_full.hex
+	objcopy -I binary -O ihex --change-addresses=57344 bin/cpm22_full.bin bin/cpm22_full.hex
 
 
 .PHONY: all clean
