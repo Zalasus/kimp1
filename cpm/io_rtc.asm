@@ -6,7 +6,10 @@
 ;
 ;    for the MSM6242B real time clock
 ;
+;     stripped down for use in CBIOS
+;
 ;=========================================
+
 
 ; Initializes the RTC, including the IVR etc.
 rtc_init:
@@ -17,7 +20,7 @@ rtc_init:
     ld A, [1 << BIT_RTC_24_12]  ; disable TEST bit and select 24h mode
     out (IO_RTC_CF), A
 
-    ld A, IVR_RTC
+    ld A, IVR_RTC_RESTART
     out (IO_IVR_RTC), A
 
     ; reset counter and callback
@@ -28,76 +31,6 @@ rtc_init:
 
     ret
     
-
-; A test routine to print the current time to console. No LF is appended so CR can be used
-;  to refresh the printed line for a continous clock
-rtc_printTime:
-    in A, (IO_RTC_H10)
-    and $03  ; mask out AM/PM bit
-    add '0'
-    call printChar
-    
-    in A, (IO_RTC_H1)
-    and $0f ; 4-bit-device!!
-    add '0'
-    call printChar
-    
-    ld A, ':'
-    call printChar
-    
-    in A, (IO_RTC_MI10)
-    and $0f
-    add '0'
-    call printChar
-
-    in A, (IO_RTC_MI1)
-    and $0f
-    add '0'
-    call printChar    
-    
-    ld A, ':'
-    call printChar
-    
-    in A, (IO_RTC_S10)
-    and $0f
-    add '0'
-    call printChar
-
-    in A, (IO_RTC_S1)
-    and $0f
-    add '0'
-    call printChar
-
-    ld A, TERM_SPACE
-    call printChar
-
-    ; if 24 Hour bit is not set, print AM/PM-Indicator. Print two rubouts otherwise
-    in A, (IO_RTC_CF)
-    bit BIT_RTC_24_12, A
-    jp z, _rtc_printTime_ampm
-
-    ld A, TERM_RUBOUT
-    call printChar
-    ld A, TERM_RUBOUT
-    call printChar
-    jp _rtc_printTime_done
-
-_rtc_printTime_ampm:
-    in A, (IO_RTC_H10)
-    bit BIT_RTC_PM_AM, A
-    jp z, _rtc_printTime_am
-    ld A, 'P'
-    jp _rtc_printTime_ampm_done
-_rtc_printTime_am:
-    ld A, 'A'
-_rtc_printTime_ampm_done:
-    call printChar
-    ld A, 'M'
-    call printChar
-
-_rtc_printTime_done:
-    ret
-
 
 
 ; Uses the RTC interrupt to delay a time interval given by A. The delay time
@@ -201,10 +134,8 @@ rtc_enableInterrupt:
 
 ; Interrupt handler for the timed interval interrupt by the RTC
 rtc_isr:
-    ; NOTE: do not exchange here. since we needed to check a flag in restart vector,
-    ;  registers will already have been exchanged once we get here
-    ;exx
-    ;ex af,af'
+    exx
+    ex af,af'
 
     ; clear the irq flag
     xor A

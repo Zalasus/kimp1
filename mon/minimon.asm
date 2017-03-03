@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.4
+;           VERSION 0.5
 ;
 ;       for the KIMP1 system
 ;
@@ -37,7 +37,7 @@ CONF_COMM_EXAMINE_BYTES_PER_LINE:   equ 16
 CONF_DISK_MAX_RETRIES:        equ 8
 CONF_DISK_USE_MFM:            equ 1    ; 0 for FM, 1 for MFM
 CONF_DISK_BYTES_PER_SECTOR:   equ 512  ; 256, 512 or 128 (the latter only in FM mode)
-CONF_DISK_TRACK_COUNT:        equ 80
+CONF_DISK_TRACK_COUNT:        equ 160  ; 80 on each side. head address mapped into track
 
 ; Boot config
 CONF_BOOT_LOCATION:           equ $2200 ; default location of the bootloader
@@ -578,9 +578,35 @@ _expression_end:
     jp resetCarryReturn
     
     
+
 _expression_term: 
-    ; we supported multiplication and division here once. what's the point?
-    ; just hand down to factor
+    call _expression_factor
+    ret c
+
+_expression_term_loop:
+    ld A, C ; chars remaining?
+    or A
+    jp z, _expression_factor_end  ; skips whites, resets carry and returns
+    ld A, (HL)
+    cp '*'
+    jp nz, _expression_factor_end
+    ; No division yet supported. I don't see how that would be useful    
+
+    push DE
+    inc HL
+    dec C
+    call _expression_factor
+    jp c, _expression_errorStackFix  ; syntax error
+    ld (DAT_EXPR_WORDSTOR), HL ; save HL
+    pop HL
+    call multHLDE
+    ex DE, HL
+    ld HL, (DAT_EXPR_WORDSTOR) ; restore HL
+    jp _expression_term_loop
+    
+
+
+
 _expression_factor:
     call skipWhites
     ld A, (HL)
@@ -633,6 +659,25 @@ subtractHLDE:
     add HL, DE
     pop DE
     ret
+
+
+
+; HL = HL * DE. DE is not affected. Result is truncated to 16 bit.
+multHLDE:
+    push BC
+    ld C, L
+    ld A, H
+	ld B, 16
+_multHLDE_loop:
+	add HL, HL
+	sla C
+	rla
+	jp nc, _multHLDE_noAdd
+	add HL, DE
+_multHLDE_noAdd:
+	djnz _multHLDE_loop
+    pop BC
+	ret
 
 
 
@@ -690,7 +735,9 @@ selectDisk:
 
 
 
-; Seeks the currently selected disk to the track given by A
+; Seeks the currently selected disk to the track given by A. All even track are mapped
+;  to side 0 of the disk while all odd tracks reside on side 0. This way head addresses
+;  can be ignored and double the amount of tracks assumed instead.
 seek:
     ld (DAT_DISK_TRACK), A
     call fdc_seek
@@ -699,8 +746,6 @@ seek:
 
 
 ; Reads the sector given by A to the location given by HL.
-;  If the sector number exeeds the maximum number on side 0, a carry to side 1 will be made. 
-;  This way head addresses can be ignored and double the amount of sectors per track assumed.
 readData:
     ld (DAT_DISK_SECTOR), A
     ld (DAT_DISK_DATAPTR), HL
@@ -711,8 +756,6 @@ readData:
 
 
 ; Writes the data pointed to by HL to the sector given in A
-;  If the sector number exeeds the maximum number on side 0, a carry to side 1 will be made. 
-;  This way head addresses can be ignored and double the amount of sectors per track assumed.
 writeData:
     ld (DAT_DISK_SECTOR), A
     ld (DAT_DISK_DATAPTR), HL
@@ -1036,12 +1079,16 @@ DAT_RTC_COUNTER:           ds 1
 DAT_RTC_CALLBACK:          ds 2
 DAT_EXT_INITIALIZED:       ds 1
 DAT_DISK_MOTOR_DRIVE:      ds 1  ; bit 1 = motors were enabled, bit 0 = drive number
+; NOTE: the order of the following areas is important for the disk info command
 DAT_DISK_NUMBER:           ds 1  ; number of currently selected drive
-DAT_DISK_TRACK:            ds 1
-DAT_DISK_HEAD:             ds 1  ; only used directly by format command
+DAT_DISK_TRACK:            ds 1  ; logical track. these run from 0 to 159 and are mapped with even track on side 0
+DAT_DISK_TRACK_PHYS:       ds 1  ; physical track used in conjunction with head number
+DAT_DISK_HEAD:             ds 1  ; calculated by seek command.
 DAT_DISK_SECTOR:           ds 1
+; order sensitive area ends here
 DAT_DISK_INT_SR0:          ds 1  ; used by FDC ISR to store result bytes of SENSEI command
 DAT_DISK_INT_CYLINDER:     ds 1  ;   "
+DAT_DISK_FILLER:           ds 1  ; used by format command
 DAT_DISK_RES_BUFFER:       ds 8  ; used to store result bytes (max. 7, one slack)
 DAT_DISK_DATAPTR:          ds 2
 DAT_DISK_COMMAND:          ds 2

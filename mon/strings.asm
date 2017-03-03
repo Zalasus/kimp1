@@ -5,7 +5,7 @@
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.4 FOR KIMP1', $0A
+    db 'MINIMON 0.5 FOR KIMP1', $0A
     db 'COPYLEFT 2017 ZALASUS', $0A
     db ' ALL WRONGS REVERSED', $0A, $00
     
@@ -69,6 +69,7 @@ str_help:
     db 'First character of input denotes command' , $0A
     db 'Whitespace is always optional', $0A
     db 'Defined commands:', $0A
+    db 'h          Show this message', $0A
     db 'e S [,E]   Examine address S to E', $0A
     db 's X        Store to address X', $0A
     db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
@@ -77,28 +78,34 @@ str_help:
     db 'l X        Load from tape to address X', $0A
     db 'b          Boot from floppy', $0A
     db 'v          Show version', $0A
-    db 'h          Show this message', $0A
     db 'p X*       Parses and prints X', $0A
     db 'i          Starts reading of Intel HEX', $0A
     db 'o S [,E]   Dumps S to E as Intel HEX', $0A
     db 'd *        Disk tool. Use dh for help', $0A
     db 'r          Soft reset', $0A
     db 'Arguments in square brackets optional', $0A
-    db 'Math expressions in arguments are possible. Allowed: + - ( )', $0A
+    db 'Math expressions in arguments are possible. Allowed: + - * ()', $0A
     db '$ is the last parsed number', $0A
     db 'Numbers interpreted as hexadecimal, prefix with # for decimal', $0A, $00
 
 str_disktoolHelp:
     db 'h        Show this message', $0A
+    db 'i        Prints information on current disk', $0A
     db 'd D      Select disk D', $0A
     db 't T      Select track T', $0A
     db 's S      Select sector S', $0A
     db 'r A[,N]  Read N sectors to A', $0A
     db 'w A[,N]  Write N sectors from A', $0A
-    db 'f        Format selected disk', $0A, $00
+    db 'f [X]    Format selected disk. Use filler X', $0A, $00
 
 endif
     
+str_disktoolInfo:
+    db 'DISK', $00, 'LTRK', $00, 'PTRK', $00, 'HEAD', $00, 'SECT', $00
+
+str_disktoolDiskchange:
+    db 'DSKCHG=', $00
+
 str_cls:
     db $1B, '[2J', $00 ; the VT100 way to clear screen
 

@@ -15,18 +15,20 @@
     include conf.inc
 
 
-sectorsToLoad:    equ ($ffff - (CONF_CPM_MEM - 7)*1024 + 1)/512
+
 bias:    equ (CONF_CPM_MEM-20)*1024
 ccp:     equ 3400H+bias ;base of ccp
 boot:    equ ccp+1600h  ;base of bios, also cold boot jump vector
+
+sectorsToLoad:    equ ($ffff - ccp + 1)/512
 
     org $2200
 
 ;------------- MAIN BOOTLOADER CODE-----------
 
-    ; the BIOS loading location might overlap our current stack. 
-    ;  place stack in middle of the TPA to be safe.
-    ld SP, $5000
+    ; the loading location for the bios might overlap the stack.
+    ;  create a temporary one under the ccp
+    ld SP, ccp
 
     ld HL, str_loadingCPM
     call MINIMON_PRINTSTRING
@@ -57,7 +59,7 @@ _bootloader_loop:
     ld A, (DAT_CURRENT_SECTOR)
     inc A
     ld (DAT_CURRENT_SECTOR), A
-    cp 19     ; check if carry to next track is neccessary
+    cp 10     ; check if carry to next track is neccessary
     jp nz, _bootloader_loop
     ld A, 1
     ld (DAT_CURRENT_SECTOR), A

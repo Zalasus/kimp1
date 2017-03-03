@@ -14,12 +14,18 @@ command_disk:
     call skipWhites
 
     ld A, (HL)
+    or A
+    jp z, monitor_syntaxError  ; if no arguments supplied
+
     inc HL
     dec C
 
     cp 'h'
     jp z, _command_disk_help
 
+    cp 'i'
+    jp z, _command_disk_info
+   
     cp 'd'
     jp z, _command_disk_selDisk
 
@@ -40,10 +46,51 @@ command_disk:
 
     jp monitor_syntaxError
 
+
+
 _command_disk_help:
     ld HL, str_disktoolHelp
     call printString
     jp monitorPrompt_loop
+
+
+
+_command_disk_info:
+    ld HL, str_disktoolInfo
+    ld DE, DAT_DISK_NUMBER
+    ld C, 5
+
+_command_disk_info_loop:
+    call printString
+    inc HL ; skip null terminator
+    ld A, '='
+    call printChar
+    ld A, (DE)
+    call printHex
+    inc DE
+    ld A, TERM_SPACE
+    call printChar
+
+    dec C
+    jp nz, _command_disk_info_loop
+
+    call printNewLine
+
+    ld HL, str_disktoolDiskchange
+    call printString
+    in A, (IO_EBCR)
+    and [1 << BIT_EBCR_DSKCHG]
+    ld A, $00
+    jp z, _command_disk_info_dskChg
+    ld A, $01
+_command_disk_info_dskChg:
+    call printHex
+
+    call printNewLine
+
+    jp monitorPrompt_loop
+
+
 
 _command_disk_selDisk:
     call expression
@@ -56,6 +103,8 @@ _command_disk_selDisk:
     jp c, _command_disk_error
     jp monitorPrompt_loop
 
+
+
 _command_disk_selTrack:
     call expression
     jp c, monitor_syntaxError
@@ -65,6 +114,8 @@ _command_disk_selTrack:
     jp c, _command_disk_error
     jp monitorPrompt_loop
 
+
+
 _command_disk_selSector:
     call expression
     jp c, monitor_syntaxError
@@ -72,14 +123,18 @@ _command_disk_selSector:
     ld (DAT_DISK_SECTOR), A
     jp monitorPrompt_loop
 
+
+
 _command_disk_read:
-    ld HL, fdc_readData
-    ld (DAT_DISK_COMMAND), HL
+    ld DE, fdc_readData
+    ld (DAT_DISK_COMMAND), DE
     jp _command_disk_rw
 
+
+
 _command_disk_write:
-    ld HL, fdc_writeData
-    ld (DAT_DISK_COMMAND), HL
+    ld DE, fdc_writeData
+    ld (DAT_DISK_COMMAND), DE
     jp _command_disk_rw
 
 
@@ -113,7 +168,7 @@ _command_disk_rw_loop:
 
     ; perform read/write
     ld HL, (DAT_DISK_COMMAND)
-    call fdc_commandWithRetries
+    call fdc_commandWithRetry
     jp c, _command_disk_error
 
     ; decrement sector count and increment target address
@@ -131,7 +186,7 @@ _command_disk_rw_loop:
     ld A, (DAT_DISK_SECTOR)
     inc A
     ld (DAT_DISK_SECTOR), A
-    cp FDC_SECTORS_PER_CYLINDER+1  ; check if carry to next track is neccessary
+    cp FDC_PARAM_SC+1  ; check if carry to next track is neccessary
     jp nz, _command_disk_rw_loop
     
     ; carry to next track
@@ -148,20 +203,26 @@ _command_disk_rw_loop:
 
 _command_disk_format:
     xor A
+    ld (DAT_DISK_FILLER), A
+
+    call skipWhites  ; did user provide filler parameter?
+    ld A, (HL)
+    or A
+    jp z, _command_disk_format_cont  ; no. continue
+
+    call expression
+    jp c, monitor_syntaxError
+    ld A, E
+    ld (DAT_DISK_FILLER), A
+
+_command_disk_format_cont:
+    xor A
     ld (DAT_DISK_TRACK), A
 _command_disk_format_loop:
     call fdc_seek
     jp c, _command_disk_error
 
-    ; format both sides of the disk
-    xor A
-    ld (DAT_DISK_HEAD), A
     call fdc_format       ; no need for retry wrapper. formatting will not fail with recoverable errors
-    jp c, _command_disk_error
-
-    ld A, 1
-    ld (DAT_DISK_HEAD), A
-    call fdc_format
     jp c, _command_disk_error
 
     ; increment track and check if last track reached

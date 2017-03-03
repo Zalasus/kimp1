@@ -19,10 +19,19 @@
 
 ; interrupt locations and corresponding restart instructions
 INT_FDC_VECTOR:   equ $0008
-INT_FDC_RESTART:  equ $CF
+IVR_FDC_RESTART:  equ $CF
+IVR_FDC_NOP:      equ $00
 
 INT_RTC_VECTOR:   equ $0010
-INT_RTC_RESTART:  equ $D7
+IVR_RTC_RESTART:  equ $D7
+
+
+; write type constants
+CPM_WRITETYPE_ALLOC:   equ 0 ;write to allocated
+CPM_WRITETYPE_DIR:     equ 1 ;write to directory
+CPM_WRITETYPE_UNALLOC: equ 2 ;write to unallocated
+
+
 
 
 bias:    equ (CONF_CPM_MEM-20)*1024
@@ -30,6 +39,8 @@ ccp:     equ 3400H+bias ;base of ccp
 bdos:    equ ccp+806h   ;base of bdos
 bios:    equ ccp+1600h  ;base of bios
     
+sectorsToLoad: equ (bios - ccp) / 512
+
     org bios
 
 ; CBIOS jump vector
@@ -78,17 +89,18 @@ DAT_CPM_DPH_BASE:  ; base address for disk parameter header
 
 
 ; Disk parameter block for allocation block size of 2kiB
+;  Our disks have 9 sectors per track of 512 bytes each, and 160 tracks (80 on ech side)
 DAT_CPM_DPB:
-    dw 72    ; count of 128-byte sectors per track (2 * 9 * 512/128)
+    dw 36    ; count of 128-byte sectors per track (9 * 512/128)
     db 4     ; block shift factor
     db $0f   ; block mask
     db 0     ; extent mask
-    dw 354   ; storage capacity (index of last allocation block, 0-based)  (2*9*512*79)/2048-1
+    dw 354   ; storage capacity (index of last allocation block, 0-based)  (9*512*158)/2048-1
     dw 255   ; number of last directory entry
     db $f0   ; mask for reserved directory blocks (we need 4 blocks to store 256 entries of 32 bytes)
     db $00   ;     "
-    db 64    ; checksum vector size
-    dw 1     ; number of reserved track at start of disk
+    dw 64    ; checksum vector size
+    dw 2     ; number of reserved tracks at start of disk
 
 
 
@@ -110,12 +122,9 @@ str_biosPanic:
 ;  (as they were previously stored in ROM) and the rest of the zeropage and eventually giving 
 ;  control to CP/M.
 boot:
-    ; Turn off ROM mapping.
-    ;  After ROM is turned off interrupt vectors need to be redefined.
-    ;  Don't interrupt during this period.
-    di 
-    ld A, [1 << BIT_TCCR_ROM_GATE] | [1 << BIT_TCCR_C2_GATE]  ; don't turn off the UART timer
-    out (IO_TCCR), A
+    ld SP, ccp
+
+    call lowLevelSetup  ; will redifine IVRs and turn off ROM mapping
 
     ; print logon string
     ld HL, str_welcome
@@ -129,14 +138,21 @@ boot:
 ;  running on this machine before, as such we don't need to fiddle with ROM mapping etc.
 wboot:
     ; since CP/M uses a different stack location, we should restore a safe location at the end
-    ; of memory for this routine. CP/M can change it back if it wishes to do so
-    ld SP, $0000
+    ; of CCP in the TPA. CP/M changes it back upon jumping to CCP
+    ld SP, ccp
+
+    ; just in case a transient program messed with this: turn off ROM and restore
+    ;  interrupt locations again
+    call lowLevelSetup
 
     xor A
     ld (DAT_DISK_NUMBER), A
     ld (DAT_DISK_TRACK), A
     ld A, 2   ; sector 1 stores bootloader. ignore it
     ld (DAT_DISK_SECTOR), A
+
+    call fdc_recalibrate
+    jp c, bootFail
 
     ld C, 0   ; number of sectors loaded
 
@@ -149,7 +165,7 @@ _wboot_loop:
     ld H, A
     ld (DAT_DISK_DATAPTR), HL
 
-    ld D, 10  ; 10 retries before fail
+    ld D, CONF_DISK_RETRIES  ; retries before fail
 _wboot_retry:
     call fdc_readData
     jp nc, _wboot_noError
@@ -160,14 +176,14 @@ _wboot_noError:
 
     inc C
     ld A, C
-    cp 11   ; CCP+BDOS is 5632 bytes long -> exactly 11 sectors of 512 bytes needed
+    cp sectorsToLoad   ; CCP+BDOS is 5632 bytes long -> exactly 11 sectors of 512 bytes needed
     jp z, gocpm  ; all sectors loaded. give control back to ccp (after intializing zeropage)
 
     ; increment sector number
     ld A, (DAT_DISK_SECTOR)
     inc A
     ld (DAT_DISK_SECTOR), A
-    cp 19     ; check if carry to next track is neccessary
+    cp 10     ; check if carry to next track is neccessary
     jp nz, _wboot_loop
     ld A, 1
     ld (DAT_DISK_SECTOR), A
@@ -181,6 +197,39 @@ _wboot_noError:
     
 
 gocpm:
+    ; initialize system vectors in zeropage
+    ; address 0 contains a jump to wboot
+    ld A, $C3  ; jp instruction
+    ld ($0000), A
+    ld HL, wboot
+    ld ($0001), HL
+
+    ; address 5 contains a jump to BDOS
+    ld ($0005), A
+    ld HL, bdos
+    ld ($0006), HL
+
+    ld BC, $0080  ; initalize default DMA address
+    call setdma
+
+    call printNewLine
+    call printNewLine
+
+    ld C, $00  ; ccp will select this drive (low nibble) and user number (high nibble)
+
+    jp ccp  ; give control to CP/M
+    
+
+
+; Turns off ROM mapping and redefines interrupt locations and IVRs.
+lowLevelSetup:
+    ; Turn off ROM mapping.
+    ;  After ROM is turned off interrupt vectors need to be redefined.
+    ;  Don't interrupt during this period.
+    di
+    ld A, [1 << BIT_TCCR_ROM_GATE] | [1 << BIT_TCCR_C2_GATE]  ; don't turn off the UART timer
+    out (IO_TCCR), A
+
     ; redefine interrupt vectors
     ;  note that these vectors are different than the ones used by the
     ;  monitor as CP/M reserves some interrupt vectors
@@ -197,54 +246,17 @@ gocpm:
     ld (INT_RTC_VECTOR+1), HL
 
     ; redefine IVRs
-    ld A, INT_FDC_RESTART
+    ld A, IVR_FDC_RESTART
     out (IO_IVR_FDC), A
 
-    ld A, INT_RTC_RESTART
+    ld A, IVR_RTC_RESTART
     out (IO_IVR_RTC), A
 
     ei  ; now interrupts are safe again
 
-    ; initialize system vectors in zeropage
-    ; address 0 contains a jump to wboot
-    ld A, $C3  ; jp instruction
-    ld ($0000), A
-    ld HL, wboot
-    ld ($0001), HL
+    ret
 
-    ; address 5 contains a jump to BDOS
-    ld ($0005), A
-    ld HL, bdos
-    ld ($0006), HL
-
-    ld HL, $0080  ; initalize default DMA address
-    call setdma
-
-    call printNewLine
-
-    ld C, $00  ; ccp will select this drive
-
-    jp ccp  ; give control to CP/M
     
-    
-
-; Prints error message and hangs
-bootFail:
-    ld HL, str_bootFail
-    call printString
-_bootFail_hang:
-    jp _bootFail_hang
-
-
-
-; Same as above, but for runtime errors
-biosPanic:
-    ld HL, str_biosPanic
-    call printString
-_biosPanic_hang:
-    jp _biosPanic_hang
-
-
 
 ; sets A to $FF if console has readable byte, $00 if not
 const:
@@ -312,8 +324,13 @@ reader:
 
 ; Move currently selected drive to track 0
 home:
-    call fdc_recalibrate
-    jp c, biosPanic  ; if seeking fails, there is no way to report back to CP/M. panic in that case
+    ld A, (DAT_CPM_HOSTDIRTY)
+    or A
+    jp nz, _home_dirty
+    ld (DAT_CPM_HOSTBUFF_ACTIVE), A
+_home_dirty:
+    xor A
+    ld (DAT_CPM_BIOSTRACK), A
     ret
 
 
@@ -328,7 +345,7 @@ seldsk:
     ; get DPH address
     ;  no shifting etc. needed. we only have two drives. condition is faster
     ld A, C
-    ld (DAT_CPM_DISK), A
+    ld (DAT_CPM_BIOSDISK), A
     or A
     jp nz, _seldsk_disk1
     
@@ -348,9 +365,7 @@ _seldsk_nonExistentDrive:
 ; Selects track in BC
 settrk:
     ld A, C
-    ld (DAT_DISK_TRACK), A
-    call fdc_seek
-    jp c, biosPanic  ; if seeking fails, there is no way to report back to CP/M. panic in that case
+    ld (DAT_CPM_BIOSTRACK), A
     ret
 
 
@@ -358,21 +373,17 @@ settrk:
 ; Selects sector in BC
 setsec:
     ld A, C
-    ld (DAT_DISK_SECTOR), A
+    ld (DAT_CPM_BIOSSECTOR), A
     ret
 
     
 
 ; Selects DMA address in BC
 setdma:
-    ld (DAT_CPM_DMAPTR), BC
+    ld H, B
+    ld L, C
+    ld (DAT_CPM_DMAPTR), HL
     ret
-
-
-
-read:
-write:
-    ; need to figure this blocking/deblocking stuff out somehow
 
 
 
@@ -383,15 +394,312 @@ sectran:
     ld L, C
     ret
 
-
 ;----------------------------------------------------------------------
     
+; the following is an implementation of the example blocking/deblocking
+;  algorithm from the CP/M 2.2 Alteration Guide with a few changes and
+;  more annotations. Track numbers have been reduced to 8 bits.
+
+read:
+    xor A
+    ld (DAT_CPM_UNALLOC_COUNT), A
+    inc A
+    ld (DAT_CPM_BIOSREAD), A       ; this is a read operation, so set flag
+    ld (DAT_CPM_PREREAD_FLAG), A   ; a read is always neccessary for a read
+    ; treat as write to unallocated, which won't require an immediate
+    ;  writeback. this way we can save a check in the rw routine.
+    ld A, CPM_WRITETYPE_UNALLOC
+    ld (DAT_CPM_WRITETYPE), A
+    jp rwoper
+
+
+
+write:
+    xor A
+    ld (DAT_CPM_BIOSREAD), A  ; not a read operation
+
+    ; check write type
+    ld A, C
+    ld (DAT_CPM_WRITETYPE), A
+    cp CPM_WRITETYPE_UNALLOC
+    jp nz, _write_checkUnallocated
+
+    ; write to first sector of unallocated block
+    ld A, 16  ; 16 CP/M sectors per allocation block
+    ld (DAT_CPM_UNALLOC_COUNT), A
+    ld A, (DAT_CPM_BIOSDISK)
+    ld (DAT_CPM_UNALLOC_DISK), A
+    ld A, (DAT_CPM_BIOSTRACK)
+    ld (DAT_CPM_UNALLOC_TRACK), A
+    ld A, (DAT_CPM_BIOSSECTOR)
+    ld (DAT_CPM_UNALLOC_SECTOR), A
+
+_write_checkUnallocated:
+    ld A, (DAT_CPM_UNALLOC_COUNT)
+    or A
+    jp z, _write_alloc
+
+    ; unallocated sectors remain
+    dec A
+    ld (DAT_CPM_UNALLOC_COUNT), A
+    ld A, (DAT_CPM_BIOSDISK)
+    ld HL, DAT_CPM_UNALLOC_DISK
+    cp (HL)
+    jp nz, _write_alloc
+
+    ; disks are the same
+    ld A, (DAT_CPM_BIOSTRACK)
+    ld HL, DAT_CPM_UNALLOC_TRACK
+    cp (HL)
+    jp nz, _write_alloc
+
+    ; tracks are the same
+    ld A, (DAT_CPM_BIOSSECTOR)
+    ld HL, DAT_CPM_UNALLOC_SECTOR
+    cp (HL)
+    jp nz, _write_alloc
+
+    inc (HL)
+    ld A, (HL) ; are we at end of track?
+    cp 72  ; CP/M sectors per track
+    jp c, _write_noTrackCarry
+
+    ; carry over to next track
+    ld (HL), 0  ; unallocated sector = 0
+    ld A, (DAT_CPM_UNALLOC_TRACK) ; increment track number
+    inc A
+    ld (DAT_CPM_UNALLOC_TRACK), A
+
+_write_noTrackCarry:
+    ; this sector is part of an unallocated block.
+    ;  a pre-read is not necessary
+    xor A
+    ld (DAT_CPM_PREREAD_FLAG), A
+    jp rwoper
+
+_write_alloc:
+    ; this sector belongs to an allocated block, so it's contents
+    ;  matter. mark as allocated with pre-read necessary
+    xor A
+    ld (DAT_CPM_UNALLOC_COUNT), A
+    inc A
+    ld (DAT_CPM_PREREAD_FLAG), A  ; read flag = 1
+
+
+
+rwoper:
+    xor A  ; clear error code
+    ld (DAT_DISK_ERRORCODE), A
+
+    ; calculate physical sector number from CP/M sector number
+    ld A, (DAT_CPM_BIOSSECTOR)
+    rrca  ; shift right by 2 -> divide by 4 (512/128 = 4)
+    rrca
+    and $3f  ; the lower 2 bits were shifted in the upper 2. mask them out
+    ld (DAT_CPM_HOSTBIOSSECTOR), A
+
+    ; mark host buffer as active and fill it if it was not previously active
+    ld HL, DAT_CPM_HOSTBUFF_ACTIVE
+    ld A, (HL)
+    ld (HL), 1
+    or A
+    jp z, _rwoper_fillhst
+
+    ; host buffer was already active. does it buffer the
+    ;  same location (disk, track, sector) as the CP/M-buffer?
+    ld A, (DAT_CPM_BIOSDISK)
+    ld HL, DAT_CPM_HOST_DISK
+    cp (HL)
+    jp nz, _rwoper_nomatch   ; disks did not match
+
+    ld A, (DAT_CPM_BIOSTRACK)
+    ld HL, DAT_CPM_HOST_TRACK
+    cp (HL)
+    jp nz, _rwoper_nomatch   ; track did not match
+
+    ld A, (DAT_CPM_HOSTBIOSSECTOR)
+    ld HL, DAT_CPM_HOST_SECTOR
+    cp (HL)
+    jp z, _rwoper_match
+
+_rwoper_nomatch:
+    ; the host buffer does not buffer the CP/M sector we want.
+    ;  we need to read the one host sector that intersects the CP/M sector we want
+    ;  to the buffer. did we write to the host buffer recently? if yes -> write back
+    ;  changes first
+    ld A, (DAT_CPM_HOSTDIRTY)
+    or A
+    call nz, writeHost
     
+_rwoper_fillhst:
+    ; the host buffer did not buffer the CP/M sector we want (either because
+    ;  buffer was not yet active or because adresses did not match). update
+    ;  address information and fill buffer with proper sector if needed.
+    ;  the latter might be unnecesary since the actual contents of an unallocated
+    ;  sector are irrelevant, so by skipping the pre-read we can save some overhead
+    ld A, (DAT_CPM_BIOSDISK)
+    ld (DAT_CPM_HOST_DISK), A
+    ld A, (DAT_CPM_BIOSTRACK)
+    ld (DAT_CPM_HOST_TRACK), A
+    ld A, (DAT_CPM_HOSTBIOSSECTOR)
+    ld (DAT_CPM_HOST_SECTOR), A
+    ld A, (DAT_CPM_PREREAD_FLAG)      ; is a read marked as necessary? 
+    or A
+    call nz, readHost
+    xor A
+    ld (DAT_CPM_HOSTDIRTY), A  ; freshly read host buffer. not dirty
+
+_rwoper_match:
+    ; either the buffer was buffering the right sector or we filled it
+    ;  with the right section. now we have to move the CP/M sector we want to
+    ;  or from the CP/M buffer.
+    
+    ; we need the offset at which we find the CP/M sector in our host sector.
+    ;  since there are 4 CP/M sectors per host sector, the offset is equal to
+    ;  the lowest 2 bits of the CP/M sector address times 128 (shift left by 7)
+    ld A, (DAT_CPM_BIOSSECTOR)
+    and $03      ; mask out lower 2 bits
+    ; shift A in HL. do this by using a bit of rotation trickery
+    rrca  ; bit 0 is now in bit 7, where it belongs in L, and bit 1 is in bit 0 for H
+    ld L, A
+    ld H, A
+    ; now bit 0 of H and bit 7 of L are the right value. since we were
+    ;  rotating, the other bits have to be cleared
+    res 0, L
+    res 7, H
+    ; shift left by 7 is complete. now add base address of host buffer
+    ;  for absolute address
+    ld DE, DAT_CPM_HOSTBUFFER
+    add HL, DE
+    ex DE, HL  ; DE now holds the target address in the host buffer
+    
+    ; perform a memcopy. DE is the source address, HL the target
+    ld HL, (DAT_CPM_DMAPTR)
+    ld C, 128
+    ld A, (DAT_CPM_BIOSREAD)  ; is this a read operation? if yes, transfer is from host to CP/M
+    or A
+    jp nz, _rwoper_moveLoop
+
+    ; write operation. swap source and destination of copy (from CP/M buffer to host buffer)
+    ;  and mark host buffer as dirty
+    ld A, 1
+    ld (DAT_CPM_HOSTDIRTY), A
+    ex DE, HL
+
+_rwoper_moveLoop:
+    ld A, (DE)
+    inc DE
+    ld (HL), A
+    inc HL
+    dec C
+    jp nz, _rwoper_moveLoop
+
+    ; buffers have been transferred. if the operation performed was
+    ;  a write to a directory sector, the next operation will probably
+    ;  be to a different location entirely, so we're better off syncing the
+    ;  host buffer right away
+    ld A, (DAT_CPM_WRITETYPE)
+    cp CPM_WRITETYPE_DIR
+    ld A, (DAT_DISK_ERRORCODE)
+    ret nz    ; not write to directory. we're done
+
+    ; write to directory. write back buffer immediately
+    or A
+    ret nz    ; error flag set? skip write back and report
+    xor A
+    ld (DAT_CPM_HOSTDIRTY), A   ; after write back, buffer won't be dirty anymore
+    call writeHost
+    ld A, (DAT_DISK_ERRORCODE)
+    ret
+
+
+
+readHost:
+    ld DE, fdc_readData
+    jp diskCommand
+
+
+
+writeHost:
+    ld DE, fdc_writeData
+    jp diskCommand
+
+
+
+diskCommand:
+    ; did the disk address change from last command? if yes, recalibrate drive first
+    ld A, (DAT_CPM_HOST_DISK)
+    ld HL, DAT_DISK_NUMBER
+    cp (HL)
+    ld (HL), A
+    jp z, _diskCommand_noDiskChange
+    call fdc_recalibrate
+    jp c, _diskCommand_error
+_diskCommand_noDiskChange:
+
+    ld A, (DAT_CPM_HOST_TRACK)
+    ld (DAT_DISK_TRACK), A
+
+    ld A, (DAT_CPM_HOST_SECTOR)
+    inc A  ; CP/M seems to give 0-based sector addresses here
+    ld (DAT_DISK_SECTOR), A
+
+    call fdc_seek
+    jp c, _diskCommand_error
+
+    ld C, CONF_DISK_RETRIES
+
+_diskCommand_retry:
+    ld HL, _diskCommand_return
+    push HL
+    push DE
+    ret   ; bogus return; serves as indirect jump to DE
+_diskCommand_return:
+    jp nc, _diskCommand_done
+    dec C
+    jp nz, _diskCommand_retry
+
+_diskCommand_error:
+    ld A, $01
+    ld (DAT_DISK_ERRORCODE), A
+    ret
+
+_diskCommand_done:
+    xor A
+    ld (DAT_DISK_ERRORCODE), A
+    ret
+
+
+
+;----------------------------------------------------------------------
+
+
+
+; Prints error message and hangs
+bootFail:
+    di
+    ld HL, str_bootFail
+    call printString
+_bootFail_hang:
+    jp _bootFail_hang
+
+
+
+; Same as above, but for runtime errors
+biosPanic:
+    di
+    ld HL, str_biosPanic
+    call printString
+_biosPanic_hang:
+    jp _biosPanic_hang
+
+
+
 ; prints CRLF characters
 printNewLine:
-    ld A, $0D
+    ld C, $0D
     call conout
-    ld A, $0A
+    ld C, $0A
     call conout
     ret
     
@@ -426,684 +734,9 @@ setCarryReturn:
 
 
 
-; Note: All following IO routines only trash A, B and HL. C, DE are safe to use
+    include io_fdc.asm
 
-;=============================================
-;
-;          Floppy IO for Minimon
-;
-; for the WD37C65 floppy subsystem controller
-;
-; NOTE: this is a stripped down version of
-;       Minimon's driver
-;
-;=============================================
-
-
-; fixed config for 512 bytes/sector MFM
-FDC_PARAM_N:       equ 2
-FDC_PARAM_GPL_RW:  equ $1B
-FDC_PARAM_SC:      equ $09
-FDC_PARAM_GPL_FMT: equ $54
-
-
-
-; Issues a soft reset to the FDC, thereby stopping any running commands.
-;  This will not affect the data rate setting, but will always initialize AT mode
-fdc_reset:
-    ; set active low /SRST bit in operations register to 0
-    di
-    xor A
-    out (IO_FDC_OPER), A
-
-    ; enable DMA and INT pins, select special mode and lift reset condition
-    ld A, [1 << BIT_FDC_DMA_ENABLE] | [1 << BIT_FDC_SOFT_RESET]
-    out (IO_FDC_OPER), A
-
-    ei
-    hlt
-
-    ; this will cause an interrupt that will be caught by ISR and cleared with
-    ;  a SENSEI command. once we're through here, controller is reset and
-    ;  we are in AT mode
-
-    ret
-
-
-
-; Enables motor of selected drive and waits the spinup time.
-;  If the right motor was already enabled, this method just returns.
-;  This uses a status byte in the data area:
-;     Bit 0 -> Drive Number, Bit 1 -> Motor On
-;  Creates a timeout that turns the motor off again after 3 seconds.
-fdc_enableMotor:
-    ; just set drive select bit appropriately and enable both motors.
-    ;  only the selected drive should spin up
-    ld A, (DAT_DISK_NUMBER)
-    ld B, A
-    ld A, (DAT_DISK_MOTOR_DRIVE)
-    bit 1, A
-    jp z, _fdc_enableMotor_turnOn ; no motor was enabled yet. do it now
-    xor B
-    bit 0, A
-    jp z, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
-    ; right motor was already on. we're done
-    jp _fdc_enableMotor_end
-    
-_fdc_enableMotor_turnOn:
-    ld A, B
-    and $01
-    or [1 << BIT_FDC_MOTOR_ENABLE_1] | [1 << BIT_FDC_MOTOR_ENABLE_2] | [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE]
-    out (IO_FDC_OPER), A
-
-    ; wait spinup time
-    ld A, 32
-    call rtc_delay  ; 32 ticks -> 500ms
-
-    ; store current motor state
-    ld A, $02
-    or B
-    ld (DAT_DISK_MOTOR_DRIVE), A
-
-_fdc_enableMotor_end:
-    ; create timeout to disable motor again
-    ld HL, fdc_disableMotor
-    ld A, 64*3  ; turn off motor after 3 seconds
-    call rtc_setTimeout
-
-    ret
-
-
-
-; Disables motors of both drives
-fdc_disableMotor:
-    ld A, (DAT_DISK_NUMBER)
-    and $01
-    or [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE]
-    out (IO_FDC_OPER), A
-
-    xor A
-    ld (DAT_DISK_MOTOR_DRIVE), A
-
-    ret
-
-
-
-; Sets drive parameters for the currently selected unit
-;  Uses fixed parameters for step rate and load time that should provide
-;  stable operation (Load = 80ms, Step = 10ms, Unload = 16ms). DMA mode is disabled.
-fdc_specify:
-    call fdc_preCommandCheck
-    ret c
-
-    ; specify command
-    ld A, $03
-    out (IO_FDC_DATA), A
-
-    call fdc_waitForRFM
-    ld A, $51   ; unload time and step rate
-    out (IO_FDC_DATA), A
-
-    call fdc_waitForRFM
-    ld A, [$28 << 1] | 1 ; load time and Non-DMA-Bit (set)
-    out (IO_FDC_DATA), A
-
-    ; no exec or result phase
-
-    jp resetCarryReturn
-
-
-
-; Loads status register 0 from controller. ST0 will be stored in B, the current cylinder
-;  index of the drive will be stored in A. This routine will not perform resets in case 
-;  the controller is busy. It only waits for the RQM signal. No error flags are generated.
-fdc_senseInterruptStatus:
-    ; we can't make a pre-command check here since a reset would cause
-    ;  an interrupt, which would then cause the ISR to issue another SENSEI
-    call fdc_waitForRFM
-
-    ; sense interrupt status command
-    ld A, $08
-    out (IO_FDC_DATA), A
-    ; command issued. this command has no execution phase and won't produce
-    ;  an interrupt. data can be read back right away (hopefully)
-
-    ; read ST0
-    call fdc_waitForRFM
-    in A, (IO_FDC_DATA)
-    ld B, A
-
-    ; read current cylinder index
-    call fdc_waitForRFM
-    in A, (IO_FDC_DATA)
-
-    ret
-
-
-
-; Recalibrates the selected drive. Drive is moved to track 0 
-;  and controller internal track counters are reset.
-;  If no errors occur, the carry bit is reset or set otherwise.
-fdc_recalibrate:
-    call fdc_preCommandCheck  ; make sure FDC accepts commands
-    ret c
-
-    call fdc_enableMotor
-
-    ; recalibrate command
-    ld A, $07 
-    out (IO_FDC_DATA), A
-
-    ; unit address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_NUMBER)
-    and $03 ; we only need the two lower bits for the drive number. HS is 0
-    out (IO_FDC_DATA), A
-    
-    ; the FDC is stepping the drive now. we need to wait until stepping is finished
-    ;  and head has has reached track 0.
-    call fdc_waitForSeekEnd
-
-    ; stepping is finished. no result phase.
-
-    ; load interrupt status byte as received by ISR
-    ld A, (DAT_DISK_INT_SR0)
-    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
-    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
-    jp nz, setCarryReturn
-
-    xor A
-    ld (DAT_DISK_TRACK), A  ; track is now 0
-
-    jp resetCarryReturn
-
-
-
-; Positions the head of selected drive over selected track
-fdc_seek:
-    call fdc_preCommandCheck
-    ret c
-
-    call fdc_enableMotor
-
-    ; seek command
-    ld A, $0f
-    out (IO_FDC_DATA), A
-
-    ; unit & head address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits. Head select is always 0 (can't step heads individually)
-    out (IO_FDC_DATA), A
-
-    ; cylinder address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_TRACK)
-    out (IO_FDC_DATA), A
-
-    ; controller is stepping now. no bytes are transferred, so just wait for
-    ;  IRQ at end of exec phase
-    call fdc_waitForSeekEnd
-
-    ; no result phase.
-
-    ; load interrupt status byte as received by ISR
-    ld A, (DAT_DISK_INT_SR0)
-    and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
-    cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
-    jp nz, setCarryReturn
-
-    jp resetCarryReturn
-
-
-
-; Reads data from the selected drive. Uses the parameters (track, sector, target
-;  data buffer etc.) as specified in the respective data area fields.
-;  If reading succeeds, the carry flag is reset. If any error occurs, carry wil be set.
-fdc_readData:
-    call fdc_preCommandCheck
-    ret c
-
-    call fdc_enableMotor
-
-    ; read command (including MT,MF & SK bits)
-    ld A, $66  ; no multitrack, MFM mode, skip deleted sectors
-    out (IO_FDC_DATA), A
-
-    ; rest of command is handled by common routine
-    call fdc_rwCommand
-
-    ; all command bytes transferred. controller will start reading now
-    call fdc_rTransfer
-
-    ; execution mode ended. let subroutine read result bytes and return
-    jp fdc_rwCommandStatusCheck
-
-
-
-; Writes data to the selected drive. Uses the parameters (track, sector, target
-;  data buffer etc.) as specified in the respective data area fields.
-;  If writing succeeds, the carry flag is reset. If any error occurs, carry wil be set.
-fdc_writeData:
-    call fdc_preCommandCheck
-    ret c
-
-    call fdc_enableMotor
-
-    ; write command (including MT & MF bits)
-    ld A, $45  ; no multitrack, MFM mode
-    out (IO_FDC_DATA), A
-
-    ; rest of command is handled by common routine
-    call fdc_rwCommand
-
-    ; controller starts writing now
-    call fdc_wTransfer
-
-    ; command execution finished. let helper routine read result bytes and set error codes
-    jp fdc_rwCommandStatusCheck
-
-
-
-; This routine can be used by both to issue the address part of the command since
-;  the command layout for read and write commands is pretty much the same. The first
-;  command byte has to be issued to the FDC by the caller to differentiate between R/W.
-;  This routine returns right before the caller should call the appropriate transfer
-;  method. Error states are handled appropriately. If this routine returns with carry set,
-;  the calling routine may return immediately.
-fdc_rwCommand:
-    ; since we map the head address into the sector number for R/W commands we need to
-    ;  calculate the actual head address and sector number here
-    xor A  ; assume head 0 initially
-    ld (DAT_DISK_HEAD), A 
-    ld A, (DAT_DISK_SECTOR)
-    sub FDC_PARAM_SC + 1    ; subtract one more so sector=SC comes out negative (sector is 0 based)
-    jp m, _fdc_rwCommand_mappingDone
-    inc A                   ; correct the one sector we subtracted too much
-    ld (DAT_DISK_SECTOR), A
-    ld A, 1
-    ld (DAT_DISK_HEAD), A
-_fdc_rwCommand_mappingDone:
-
-    ; unit & head address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_HEAD)
-    rlca ; shift left head address by 2
-    rlca
-    ld B, A
-    ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits
-    or B     ; or-in head address
-    out (IO_FDC_DATA), A
-
-    ; cylinder address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_TRACK)
-    out (IO_FDC_DATA), A
-
-    ; head address (repeated value, same as in unit address)
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_HEAD)
-    out (IO_FDC_DATA), A
-    
-    ; sector address
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_SECTOR)
-    out (IO_FDC_DATA), A
-
-    ; bytes per sector
-    call fdc_waitForRFM
-    ld A, FDC_PARAM_N
-    out (IO_FDC_DATA), A
-
-    ; end of track
-    ;  If the controller reads past this, it will terminate the command with
-    ;  an end-of-cylinder error. since we can't keep track of sector count during
-    ;  read this is exactly what we want
-    call fdc_waitForRFM
-    ld A, (DAT_DISK_SECTOR)
-    out (IO_FDC_DATA), A
-
-    ; gap length
-    call fdc_waitForRFM
-    ld A, FDC_PARAM_GPL_RW
-    out (IO_FDC_DATA), A
-
-    ; data length
-    call fdc_waitForRFM
-    xor A  ; with sectors > 128 bytes this field is meaningless
-    out (IO_FDC_DATA), A
-
-    ret
-
-
-
-; Loads the result data buffer with result bytes from the FDC. Then checks
-;  the status bytes returned in result phase of a read/write or format command
-;  and sets the carry flag accordingly.
-fdc_rwCommandStatusCheck:
-    call fdc_readResultBuffer
-
-    ; ST0
-    ld A, (DAT_DISK_RES_BUFFER)
-    and [1 << BIT_FDC_INTERRUPT_CODE0] | [1 << BIT_FDC_INTERRUPT_CODE1]
-    jp z, resetCarryReturn  ; if both IC bits are zero, command was successful. no need to check further
-
-    ; if IC bits were not zero, something went wrong. check for exact cause
-
-    ; ST1
-    ld A, (DAT_DISK_RES_BUFFER+1)
-    and $7f   ; ignore end-of-cylinder bit
-    jp nz, setCarryReturn
-    ; Note: End of cylinder is not an error. Since the CPU is too slow to check the transferred byte count
-    ;  and issue a TC once a sector has been transferred, we set the end-of-track marker to the sector we want
-    ;  to read, which will cause the FDC to terminate the transfer after one sector, albeit with an End-of-Cylinder-error
-
-    ; ST2
-    ld A, (DAT_DISK_RES_BUFFER+2)
-    and $33  ; neither of these bits must be set (sorry, bitmask was to long)
-    jp nz, setCarryReturn
-
-    jp resetCarryReturn
-
-
-
-; Reads 7 result bytes from the FDC to the result data buffer.
-fdc_readResultBuffer:
-    ld HL, DAT_DISK_RES_BUFFER
-    ld B, 7  ; read all 7 result bytes
-
-_fdc_readResultBuffer_loop:
-    call fdc_waitForRFM
-    in A, (IO_FDC_DATA)
-    ld (HL), A
-    inc HL
-    djnz _fdc_readResultBuffer_loop
-
-    ret
-    
-
-
-; Checks MSR repeatedly and returns if no drives are stepping anymore.
-;  This implies that an IRQ has been made and the ISR issued a SENSEI
-;  command, as only then the busy bits get reset.
-fdc_waitForSeekEnd:
-    in A, (IO_FDC_STAT)
-    and $1f ; all busy bits must be 0
-    jp nz, fdc_waitForSeekEnd  ; no halting here!! polling is safer since interrupts are handled async for seeks
-    ret
-
-
-
-; Half polling/half IRQ routine for read data transfer. Uses interrupts in mode 0 to wait for the FDC.
-;  Transfers data read from the FDC to the buffer pointed by (HL), growing upwards. 
-;  There is no bounds checking. Transfer ends when controller ends it.
-;  When finished, HL points to the location AFTER where the last byte was stored.
-;  Since this routine has some overhead before actually able to react to IRQs, the controller may 
-;  be overrun when it locks the PLL and finds the start sector faster than this routine can enter
-;  it's transfer loop. This, however, seems unlikely to happen in practice.
-fdc_rTransfer:
-    call rtc_disableInterrupt ; make sure transfer is not interrupted
-
-    ; Initialize IVR to a NOP so we can use the HLT instruction in IM0 to wait for the IRQ
-    ;  without the cycle penalty of calling an ISR. When HLT is lifted, the CPU will execute a NOP
-    ;  for 6 cycles and then continue after the HLT. This is faster and more elegant than polling the MSR
-    ld A, $00
-    out (IO_IVR_FDC), A  
-
-    exx  ; use alternative registers for transfer so we trash less
-
-    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
-    ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
-    ld C, IO_FDC_DATA  ; IO port constant for ini instruction (again used for speed)
-
-    call _fdc_rTransfer_loop ; call loop instead of jumping to it. a conditional return is faster than a branch
-
-    exx
-
-    ; restore original IVR contents
-    ld A, INT_FDC_RESTART
-    out (IO_IVR_FDC), A
-
-    call rtc_enableInterrupt
-
-    ret
-
-; time critical part begins here
-_fdc_rTransfer_loop:
-    ei
-    hlt
-    ; HALT was lifted~ check for interrupt cause
-    in A, (IO_FDC_STAT)
-    and D  ; [1 << BIT_FDC_EXEC_MODE], use D as constant for speed
-    ret z  ; if not in exec mode anymore, we're done
-    ini
-    jp _fdc_rTransfer_loop
-
-
-
-; Initiates an IRQ-driven data transfer to the FDC from the location pointed to by (HL).
-;  Same details apply as to read routine above.
-fdc_wTransfer:
-    call rtc_disableInterrupt ; make sure transfer is not interrupted
-
-    ; initialize IVR to alternative NOP since we want to save cycles
-    ld A, $00
-    out (IO_IVR_FDC), A
-
-    exx
-
-    ld HL, (DAT_DISK_DATAPTR) ; HL is used as target address during transfer
-    ld D, [1 << BIT_FDC_EXEC_MODE] ; constant for bit masking. used instead of immediate value for speed
-    ld C, IO_FDC_DATA  ; IO port constant for outi instruction (again used for speed)
-
-    call _fdc_wTransfer_loop
-
-    exx
-
-    ld A, INT_FDC_RESTART
-    out (IO_IVR_FDC), A
-
-    call rtc_enableInterrupt
-
-    ret
-
-; time critical part begins here
-_fdc_wTransfer_loop:
-    ei
-    hlt
-    ; HALT was lifted~ check for interrupt cause
-    in A, (IO_FDC_STAT)
-    and D  ; [1 << BIT_FDC_EXEC_MODE], use D as constant for speed
-    ret z  ; if not in exec mode anymore, we're done
-    outi
-    jp _fdc_wTransfer_loop
-
-
-
-; Checks initial condition for issuing commands to the FDC. If controller is busy,
-;  it will be reset and busy state checked again. Then this routine checks for RQM 
-;  signal and if DIO signal is set to "input". If any of this fails, the carry flag
-;  will be set upon return or reset otherwise.
-fdc_preCommandCheck:
-    in A, (IO_FDC_STAT)  ; is controller busy? if yes -> reset
-    bit BIT_FDC_BUSY, A
-    jp z, _fdc_preCommandCheck_checkRQM
-
-    call fdc_reset
-    in A, (IO_FDC_STAT)   ; did resetting fix busy state?
-    bit BIT_FDC_BUSY, A
-    jp nz, setCarryReturn ; nope -> error. else check RQM and DIO state
-
-_fdc_preCommandCheck_checkRQM:
-    and [1 << BIT_FDC_REQUEST_FOR_MASTER] | [1 << BIT_FDC_DATA_INPUT]
-    cp [1 << BIT_FDC_REQUEST_FOR_MASTER]
-    jp nz, setCarryReturn
-    jp resetCarryReturn
-
-
-
-
-; Waits until the FDC reports a Request For Master
-fdc_waitForRFM:
-    in A, (IO_FDC_STAT)
-    and [1 << BIT_FDC_REQUEST_FOR_MASTER]
-    jp z, fdc_waitForRFM
-    ret
-
-
-
-; Interrupt handler for floppy controller. This is normally used when controller is idling or
-;  for seek/recalibrate commands. During read/write operations and other commands with
-;  result phase the IVR is temporarily overwritten with a NOP and this routine is not used.
-fdc_isr:
-    ex AF, AF'
-    exx
-
-    ; check for interrupt cause using SENSEI command
-    call fdc_senseInterruptStatus
-    ; store in result buffer
-    ld A, B
-    ld (DAT_DISK_INT_SR0), A
-    
-    exx
-    ex AF, AF'
-    ei
-    ret
-
-
-
-
-;=========================================
-;
-;          RTC IO for Minimon
-;
-;    for the MSM6242B real time clock
-;
-;=========================================
-
-; Uses the RTC interrupt to delay a time interval given by A. The delay time
-;  equals A*1/64 seconds +/- a few clock cycles. Will enable interrupts.
-;  Any pending timouts will get called as soon as the delay is over, regardless
-;  of their previously remaining time.
-rtc_delay:
-    di
-
-    ld (DAT_RTC_COUNTER), A
-
-    ; reset internal second counter
-    ld A, [1 << BIT_RTC_24_12] | [1 << BIT_RTC_REST]
-    out (IO_RTC_CF), A
-    ld A, [1 << BIT_RTC_24_12]
-    out (IO_RTC_CF), A
-
-    ld A, $de
-    out ($ff), A
-
-    ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
-    out (IO_RTC_CE), A
-    
-    ei
-_rtc_delay_loop:
-    ld A, (DAT_RTC_COUNTER)
-    or A
-    jp nz, _rtc_delay_loop
-    
-    call rtc_disableInterrupt
-
-    ret
-
-
-
-; Sets up the RTC to wait for a time given by A as a number
-;  of 1/64 second intervals, stores the address in HL, then returns.
-;  Once the set time has passed, a call to the stored address is made
-;  and the timer is deactivated. Will enable interrupts.
-;  If this is called when another timeout is already pending, the old one will be
-;  ignored and that callback never made.
-rtc_setTimeout:
-    di
-
-    ld (DAT_RTC_COUNTER), A
-    ld (DAT_RTC_CALLBACK), HL
-    
-    ; reset internal second counter
-    ld A, [1 << BIT_RTC_24_12] | [1 << BIT_RTC_REST]
-    out (IO_RTC_CF), A
-    ld A, [1 << BIT_RTC_24_12]
-    out (IO_RTC_CF), A
-
-    ld A, $af
-    out ($ff), A
-
-    ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
-    out (IO_RTC_CE), A
-
-    ei
-
-    ret
-
-
-
-; Disables RTC interrupts but will not delete a pending timeout.
-;  Won't affect the CPU interrupt settings
-rtc_disableInterrupt:
-    ld A, $03  ; mask bit = 1, int mode
-    out (IO_RTC_CE), A
-    xor A      ; make sure irq line is deactivated
-    out (IO_RTC_CD), A 
-    ret
-    
-
-
-; Enables 1/64 second interrupt. Does not affect the CPU interrupt
-;  flags
-rtc_enableInterrupt:
-    ld A, $02  ; interrupt mode, 1/64 interval, mask bit = 0
-    out (IO_RTC_CE), A
-    ret
-
-
-
-; Interrupt handler for the timed interval interrupt by the RTC
-rtc_isr:
-    exx
-    ex af,af'
-
-    ; clear the irq flag
-    xor A
-    out (IO_RTC_CD), A
-    
-    ld A, (DAT_RTC_COUNTER)
-    or A
-    jp z, _rtc_isr_counterHitZero
-    dec A
-    ld (DAT_RTC_COUNTER), A
-    jp nz, _rtc_isr_end
-
-_rtc_isr_counterHitZero:
-    ; counter hit zero. if there's a callback, call it
-    call rtc_disableInterrupt
-    ld HL, (DAT_RTC_CALLBACK)
-    ld A, H
-    or L
-    jp z, _rtc_isr_end
-    
-    ; make a call to callback
-    ld DE, _rtc_isr_callback_end
-    push DE
-    jp (HL)
-_rtc_isr_callback_end:
-    ld HL, $0000   ; delete timeout
-    ld (DAT_RTC_CALLBACK), HL
-
-_rtc_isr_end:
-    exx
-    ex af, af'
-    ei
-    ret
-
-
+    include io_rtc.asm
 
 
     
@@ -1114,61 +747,76 @@ bios_end:
 
 ; ----------------- NON-FIXED DATA AREA -------------------
 
-; The following are just reserved space. They do not need to be
-;  included in the final image
+DAT_RTC_COUNTER: db 0
 
-DAT_RTC_COUNTER:
-    ds 1
+; RTC callback address
+DAT_RTC_CALLBACK: dw $0000
 
-DAT_RTC_CALLBACK:
-    ds 2
 
-DAT_DISK_MOTOR_DRIVE:
-    ds 1
 
-DAT_DISK_INT_SR0:
-    ds 1
+; Flag for currently active drive motor
+DAT_DISK_MOTOR_DRIVE: db $00
 
-DAT_DISK_TRACK:
-    ds 1
+; as returned by the SENSEI command
+DAT_DISK_INT_SR0:      db 0
+DAT_DISK_INT_CYLINDER: db 0
 
-DAT_DISK_HEAD:
-    ds 1
+DAT_DISK_NUMBER:     db $ff   ; impossible drive so the first thing we do is recalibrate
+DAT_DISK_TRACK:      db 0
+DAT_DISK_TRACK_PHYS: db 0
+DAT_DISK_HEAD:       db 0
+DAT_DISK_SECTOR:     db 1
+DAT_DISK_DATAPTR:    dw DAT_CPM_HOSTBUFFER
 
-DAT_DISK_SECTOR:
-    ds 1
+DAT_DISK_RES_BUFFER: dc 7, $00
 
-DAT_DISK_DATAPTR:
-    ds 2
+; the error code to be returned to CP/M
+DAT_DISK_ERRORCODE:   db 0
 
-DAT_DISK_RES_BUFFER:
-    ds 7
 
-DAT_DISK_NUMBER:
-DAT_CPM_DISK:    ; currently selected disk
-    ds 1
 
-DAT_CPM_DMAPTR:
-    ds 2
+; The disk addresses as selected by the BIOS calls
+DAT_CPM_BIOSDISK:   db 0
+DAT_CPM_BIOSTRACK:  db 0
+DAT_CPM_BIOSSECTOR: db 0
 
-DAT_CPM_CSV_0:
-    ds 64
+; the host sector that contains the CP/M sector we want
+;  (translated bios sector)
+DAT_CPM_HOSTBIOSSECTOR: db 0
 
-DAT_CPM_ALV_0:
-    ds 46
+; The disk address currently referenced by the host buffer
+DAT_CPM_HOST_DISK:   db 0
+DAT_CPM_HOST_TRACK:  db 0
+DAT_CPM_HOST_SECTOR: db 0
 
-DAT_CPM_CSV_1:
-    ds 64
+; flag that is set if host buffer was used before (contains meaningful data)
+;  if it is not set upon r/w we know for sure we need to fill it before doing stuff
+DAT_CPM_HOSTBUFF_ACTIVE: db 0
 
-DAT_CPM_ALV_1:
-    ds 46
+; flag that is set if host buffer has unsaved changes
+DAT_CPM_HOSTDIRTY: db 0
+    
+DAT_CPM_UNALLOC_COUNT:   db 0
+DAT_CPM_UNALLOC_DISK:    db 0
+DAT_CPM_UNALLOC_TRACK:   db 0
+DAT_CPM_UNALLOC_SECTOR:  db 0
 
-DAT_CPM_DIRBUF:
-    ds 128
+DAT_CPM_PREREAD_FLAG: db 0
+DAT_CPM_BIOSREAD:     db 0
+DAT_CPM_WRITETYPE:    db 0
+DAT_CPM_DMAPTR:       dw $0080
+
+
+; Buffer areas for BDOS
+DAT_CPM_CSV_0:  dc 64, $00
+DAT_CPM_ALV_0:  dc 46, $00
+DAT_CPM_CSV_1:  dc 64, $00
+DAT_CPM_ALV_1:  dc 46, $00
+DAT_CPM_DIRBUF: dc 128, $00
 
 ; Buffer for blocking/deblocking
-DAT_CPM_HOSTBUF:
-    ds 512
+DAT_CPM_HOSTBUFFER:   dc 512, $00
+
 
     end
     

@@ -11,73 +11,11 @@
 
 ; All following routines can trash A, B and HL. C and DE are preserved.
 
-
-; determine parameters from config. values taken from table in WD37C65 datasheet.
-;  these are for microfloppies only. they probably won't work on any other drive type
-
-if CONF_DISK_BYTES_PER_SECTOR == 128 && CONF_DISK_USE_MFM == 0
-    FDC_PARAM_N:     equ 0
-    FDC_PARAM_SC:    equ $0f
-    FDC_PARAM_GPL_RW:  equ $07
-    FDC_PARAM_GPL_FMT: equ $1B
-endif
-if CONF_DISK_BYTES_PER_SECTOR == 256
-    FDC_PARAM_N:     equ 1
-    FDC_PARAM_GPL_RW:  equ $0E
-
-    if CONF_DISK_USE_MFM == 0
-        FDC_PARAM_SC:      equ $09
-        FDC_PARAM_GPL_FMT: equ $2A
-    else
-        FDC_PARAM_SC:      equ $0F
-        FDC_PARAM_GPL_FMT: equ $36
-    endif
-endif
-if CONF_DISK_BYTES_PER_SECTOR == 512
-    FDC_PARAM_N:     equ 2
-    FDC_PARAM_GPL_RW:  equ $1B
-
-    if CONF_DISK_USE_MFM == 0
-        FDC_PARAM_SC:      equ $05
-        FDC_PARAM_GPL_FMT: equ $3A
-    else
-        FDC_PARAM_SC:      equ $09
-        FDC_PARAM_GPL_FMT: equ $54
-    endif
-endif
-
-
-
-; Initializes the FDC. This routine will soft reset the FDC, set
-;  data rate and place the FDC in special mode. 
-fdc_init:
-    ; initialize IVR to the dedicated restart vector
-    ld A, IVR_FDC_DEF
-    out (IO_IVR_FDC), A
-    
-    ; initialize disk data area
-    ld A, 1
-    ld (DAT_DISK_SECTOR), A
-    xor A
-    ld (DAT_DISK_TRACK), A
-    ld (DAT_DISK_TRACK_PHYS), A
-    ld (DAT_DISK_HEAD), A
-    ld (DAT_DISK_NUMBER), A
-    ld (DAT_DISK_MOTOR_DRIVE), A
-    ld HL, DAT_DISK_DATABUFFER
-    ld (DAT_DISK_DATAPTR), HL
-
-    call fdc_reset
-
-    ; the soft reset will also have initialized AT mode
-
-    ; initialize data rate
-    ; 125Kb/s @ FM for 16MHz default clock
-    ld A, [1 << BIT_FDC_DATARATE1] 
-    out (IO_FDC_CONT), A
-
-    jp fdc_specify
-
+; fixed config for 512 bytes/sector MFM
+FDC_PARAM_N:     equ 2
+FDC_PARAM_GPL_RW:  equ $1B
+FDC_PARAM_SC:      equ $09
+FDC_PARAM_GPL_FMT: equ $54
 
 
 ; Issues a soft reset to the FDC, thereby stopping any running commands.
@@ -99,7 +37,7 @@ fdc_reset:
     ;  a SENSEI command. once we're through here, controller is reset and
     ;  we are in AT mode
 
-    ret
+    jp fdc_specify
 
 
 
@@ -161,54 +99,24 @@ fdc_disableMotor:
 
 
 
-; Will execute the routine stored in HL repeatedly (for a maximum number
-;  of times) until it executes without errors. If a write-protect error
-;  is reported, it returns immediatly. If the maximum number of tries
-;  is exeeded, the error codes are returned just as the original routine
-;  would have.
-fdc_commandWithRetry:
-    ld (DAT_DISK_COMMAND), HL
-    ld A, CONF_DISK_MAX_RETRIES
-    ld (DAT_DISK_RETRIES), A
-
-_fdc_commandWithRetry_loop:
-    ld HL, _fdc_commandWithRetry_return
-    push HL
-    ld HL, (DAT_DISK_COMMAND)
-    jp (HL)
-_fdc_commandWithRetry_return:
-    ret nc
-    cp $02 ; write protect error code
-    jp z, setCarryReturn  ;  no retries if write protected
-    ld B, A
-    ld A, (DAT_DISK_RETRIES)
-    dec A
-    ld (DAT_DISK_RETRIES), A
-    jp nz, _fdc_commandWithRetry_loop
-    ; no tries left
-    ld A, B
-    jp setCarryReturn
-
-
-
 ; Sets drive parameters for the currently selected unit
 ;  Uses fixed parameters for step rate and load time that should provide
 ;  stable operation (Load = 80ms, Step = 10ms, Unload = 16ms). DMA mode is disabled.
 fdc_specify:
     call fdc_preCommandCheck
-    jp c, fdc_commandError_invalidState
+    ret c
 
     ; specify command
     ld A, $03
     out (IO_FDC_DATA), A
 
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, $51   ; unload time and step rate
     out (IO_FDC_DATA), A
 
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, [$28 << 1] | 1 ; load time and Non-DMA-Bit (set)
     out (IO_FDC_DATA), A
 
@@ -262,7 +170,7 @@ fdc_senseInterruptStatus:
 ;  A will contain an FDC error code (see R/W commands)
 fdc_recalibrate:
     call fdc_preCommandCheck  ; make sure FDC accepts commands
-    jp c, fdc_commandError_invalidState
+    ret c
 
     call fdc_enableMotor
 
@@ -272,7 +180,7 @@ fdc_recalibrate:
 
     ; unit address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState  ; direction must still be input~ recalibrate requires 2 bytes
+    ret c  ; direction must still be input~ recalibrate requires 2 bytes
     ld A, (DAT_DISK_NUMBER)
     and $03 ; we only need the two lower bits for the drive number. HS is 0
     out (IO_FDC_DATA), A
@@ -287,7 +195,7 @@ fdc_recalibrate:
     ld A, (DAT_DISK_INT_SR0)
     and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
     cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
-    jp nz, fdc_commandError_commandUnsuccessful
+    jp nz, setCarryReturn
 
     xor A
     ld (DAT_DISK_TRACK), A
@@ -320,7 +228,7 @@ fdc_seek:
 
 
     call fdc_preCommandCheck
-    jp c, fdc_commandError_invalidState
+    ret c
 
     call fdc_enableMotor
 
@@ -330,14 +238,14 @@ fdc_seek:
 
     ; unit & head address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_NUMBER)
     and $03  ; mask out lower 2 bits. Head select is always 0 (can't step heads individually)
     out (IO_FDC_DATA), A
 
     ; cylinder address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_TRACK_PHYS)
     out (IO_FDC_DATA), A
 
@@ -351,7 +259,7 @@ fdc_seek:
     ld A, (DAT_DISK_INT_SR0)
     and [1 << BIT_FDC_SEEK_END] | [1 << BIT_FDC_EQUIPMENT_CHECK]
     cp [1 << BIT_FDC_SEEK_END]  ; only seek end must be set
-    jp nz, fdc_commandError_commandUnsuccessful
+    jp nz, setCarryReturn
 
 _fdc_seek_end:
     xor A
@@ -366,16 +274,12 @@ _fdc_seek_end:
 ;  state or $03 if the FDC reported errors after executing the command.
 fdc_readData:
     call fdc_preCommandCheck
-    jp c, fdc_commandError_invalidState
+    ret c
 
     call fdc_enableMotor
 
     ; read command (including MT,MF & SK bits)
-if CONF_DISK_USE_MFM == 0
-    ld A, $26  ; no multitrack, FM mode, skip deleted sectors
-else
     ld A, $66  ; no multitrack, MFM mode, skip deleted sectors
-endif
     out (IO_FDC_DATA), A
 
     ; rest of command is handled by common routine
@@ -402,16 +306,12 @@ endif
 ;  errors after executing the command.
 fdc_writeData:
     call fdc_preCommandCheck
-    jp c, fdc_commandError_invalidState
+    ret c
 
     call fdc_enableMotor
 
     ; write command (including MT & MF bits)
-if CONF_DISK_USE_MFM == 0
-    ld A, $05  ; no multitrack, FM mode
-else
     ld A, $45  ; no multitrack, MFM mode
-endif
     out (IO_FDC_DATA), A
 
     ; rest of command is handled by common routine
@@ -430,101 +330,6 @@ endif
 
 
 
-; Formats the currently selected track on the selected drive.
-;  Error codes same as for write command.
-fdc_format:
-    call fdc_preCommandCheck
-    jp c, fdc_commandError_invalidState
-
-    ; prepare data buffer with address information
-    ;  (C,H,R,N for each sector)
-    ld HL, DAT_DISK_DATABUFFER
-    ld (DAT_DISK_DATAPTR), HL
-    ld B, FDC_PARAM_SC   ; loop for every sector on the track
-_fdc_format_bufferLoop:
-    ; Cylinder number
-    ld A, (DAT_DISK_TRACK_PHYS)
-    ld (HL), A
-    inc HL
-    ; Head number
-    ld A, (DAT_DISK_HEAD)
-    ld (HL), A
-    inc HL
-    ; Sector number (calculate from loop index, first sector has index 1)
-    ld A, FDC_PARAM_SC + 1
-    sub B
-    ld (HL), A
-    inc HL
-    ; Bytes/sector
-    ld A, FDC_PARAM_N  ; load parameter as configured
-    ld (HL), A
-    inc HL
-    djnz _fdc_format_bufferLoop
-    
-    call fdc_enableMotor
-
-    ; format track command (including MF bits)
-if CONF_DISK_USE_MFM == 0
-    ld A, $0D  ; FM mode
-else
-    ld A, $4D  ; MFM mode
-endif
-    out (IO_FDC_DATA), A
-
-    ; unit & head address
-    call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-    ld A, (DAT_DISK_HEAD)
-    rlca ; shift left head address by 2
-    rlca
-    ld B, A
-    ld A, (DAT_DISK_NUMBER)
-    and $03  ; mask out lower 2 bits
-    or B     ; or-in head address
-    out (IO_FDC_DATA), A
-
-    ; bytes per sector
-    call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-    ld A, FDC_PARAM_N
-    out (IO_FDC_DATA), A
-
-    ; sectors per track
-    ;  This value depends on the drive type. We'll assume we have a 3.5" floppy for now
-    ;  and use a fixed value
-    call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-    ld A, FDC_PARAM_SC
-    out (IO_FDC_DATA), A
-
-    ; gap length
-    ;  again, this depends on drive type when formating. use value for 3.5" floppy again
-    call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-    ld A, FDC_PARAM_GPL_FMT
-    out (IO_FDC_DATA), A
-
-    ; data filler
-    ;  this byte wil be used to fill the data field
-    call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-    ld A, (DAT_DISK_FILLER)
-    out (IO_FDC_DATA), A
-    
-    ; command is running now. we need to provide CHS addresses for each sector during
-    ;  exec phase, which is again rather time critical -> pause RTC interrupt.
-    ;  Use write transfer routine to transfer the structure we prepared earlier
-    call rtc_disableInterrupt
-    call fdc_wTransfer
-    call rtc_enableInterrupt
-
-    ; let subroutine check result bytes
-    call fdc_rwCommandStatusCheck
-    ei ; wTransfer will leave ints disabled
-    ret
-
-
-
 ; This routine can be used by both to issue the address part of the command since
 ;  the command layout for read and write commands is pretty much the same. The first
 ;  command byte has to be issued to the FDC by the caller to differentiate between R/W.
@@ -534,7 +339,7 @@ endif
 fdc_rwCommand:
     ; unit & head address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_HEAD)
     rlca ; shift left head address by 2
     rlca
@@ -546,25 +351,25 @@ fdc_rwCommand:
 
     ; cylinder address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_TRACK_PHYS)
     out (IO_FDC_DATA), A
 
     ; head address (repeated value, same as in unit address)
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_HEAD)
     out (IO_FDC_DATA), A
     
     ; sector address
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_SECTOR)
     out (IO_FDC_DATA), A
 
     ; bytes per sector
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, FDC_PARAM_N
     out (IO_FDC_DATA), A
 
@@ -573,24 +378,20 @@ fdc_rwCommand:
     ;  an end-of-cylinder error. since we can't keep track of sector count during
     ;  read this is exactly what we want
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, (DAT_DISK_SECTOR)
     out (IO_FDC_DATA), A
 
     ; gap length
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
+    ret c
     ld A, FDC_PARAM_GPL_RW
     out (IO_FDC_DATA), A
 
     ; data length
     call fdc_waitForRFM
-    jp c, fdc_commandError_invalidState
-if CONF_DISK_BYTES_PER_SECTOR == 128
-    ld A, 128   ; if N=0, this is the absolute value of bytes per sector. meaningless otherwise
-else
-    xor A
-endif
+    ret c
+    xor A   ; meaningless for N > 128
     out (IO_FDC_DATA), A
 
     xor A
@@ -603,23 +404,19 @@ endif
 ;  and sets the carry flag and error codes in A appropriately.
 fdc_rwCommandStatusCheck:
     call fdc_readResultBuffer
-    jp c, fdc_commandError_invalidState
+    ret c
 
     ; ST0
     ld A, (DAT_DISK_RES_BUFFER)
     and [1 << BIT_FDC_INTERRUPT_CODE0] | [1 << BIT_FDC_INTERRUPT_CODE1]
-    jp z, _fdc_rwCommandStatusCheck_success  ; if both IC bits are zero, command was successful. no need to check further
+    jp z, resetCarryReturn  ; if both IC bits are zero, command was successful. no need to check further
 
     ; if IC bits were not zero, something went wrong. check for exact cause
 
     ; ST1
     ld A, (DAT_DISK_RES_BUFFER+1)
-    bit BIT_FDC_NOT_WRITEABLE, A
-    jp nz, fdc_commandError_writeProtected
-    bit BIT_FDC_OVERRUN, A
-    jp nz, fdc_commandError_invalidState
     and $7f   ; ignore end-of-cylinder bit
-    jp nz, fdc_commandError_commandUnsuccessful
+    jp nz, setCarryReturn
     ; Note: End of cylinder is not an error. Since the CPU is too slow to check the transferred byte count
     ;  and issue a TC once a sector has been transferred, we set the end-of-track marker to the sector we want
     ;  to read, which will cause the FDC to terminate the transfer after one sector, albeit with an End-of-Cylinder-error
@@ -627,10 +424,8 @@ fdc_rwCommandStatusCheck:
     ; ST2
     ld A, (DAT_DISK_RES_BUFFER+2)
     and $33  ; neither of these bits must be set (sorry, bitmask was to long)
-    jp nz, fdc_commandError_commandUnsuccessful
+    jp nz, setCarryReturn
 
-_fdc_rwCommandStatusCheck_success:
-    xor A
     jp resetCarryReturn
 
 
@@ -652,20 +447,6 @@ _fdc_readResultBuffer_loop:
 
     jp resetCarryReturn
     
-
-
-fdc_commandError_invalidState:
-    ld A, $01
-    jp setCarryReturn     
-   
-fdc_commandError_writeProtected:
-    ld A, $02
-    jp setCarryReturn
-
-fdc_commandError_commandUnsuccessful:
-    ld A, $03
-    jp setCarryReturn
-
 
 
 ; Checks MSR repeatedly and returns if no drives are stepping anymore.
@@ -705,7 +486,7 @@ fdc_rTransfer:
     exx
 
     ; restore original IVR contents
-    ld A, IVR_FDC_DEF
+    ld A, IVR_FDC_RESTART
     out (IO_IVR_FDC), A
     ret
 
@@ -740,7 +521,7 @@ fdc_wTransfer:
 
     exx
 
-    ld A, IVR_FDC_DEF
+    ld A, IVR_FDC_RESTART
     out (IO_IVR_FDC), A
     ret
 
@@ -804,7 +585,7 @@ fdc_isr:
     ;  the SENSEI routine won't cause resets and will return with error if initial
     ;  condition not met (if that happens we are screwed)
     call fdc_senseInterruptStatus
-    jp c, panic  ; sensei could not execute -> can't reset IRQ line. PANIC!!!
+    jp c, biosPanic  ; sensei could not execute -> can't reset IRQ line. PANIC!!!
     ; store in result buffer
     ld (DAT_DISK_INT_CYLINDER), A
     ld A, B

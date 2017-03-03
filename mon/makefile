@@ -11,5 +11,8 @@ zout/minimon.cim:
 bin/minimon.bin: zout/minimon.cim
 	dd if=./zout/minimon.cim of=./bin/minimon.bin bs=1 count=8192
 
-.PHONY: all clean
+flash: bin/minimon.bin
+	minipro -p "TMS2764 @DIP28" -w bin/minimon.bin
+
+.PHONY: all clean flash
 .DEFAULT_GOAL := all

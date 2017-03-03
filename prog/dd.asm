@@ -51,7 +51,7 @@ loop:
     ld A, (DAT_CURRENT_SECTOR)
     inc A
     ld (DAT_CURRENT_SECTOR), A
-    cp 10     ; check if carry to next track is neccessary
+    cp 19     ; check if carry to next track is neccessary
     jp nz, loop
     ld A, 1
     ld (DAT_CURRENT_SECTOR), A
