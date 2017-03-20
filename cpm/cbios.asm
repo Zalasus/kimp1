@@ -185,6 +185,8 @@ _wboot_noError:
     ld (DAT_DISK_SECTOR), A
     cp 10     ; check if carry to next track is neccessary
     jp nz, _wboot_loop
+
+    ; carry over to next track
     ld A, 1
     ld (DAT_DISK_SECTOR), A
     ld A, (DAT_DISK_TRACK)
