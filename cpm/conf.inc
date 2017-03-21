@@ -12,4 +12,4 @@
 ; NOTE: We have a 64k system, but our BIOS is unusually large, so we make a compromise here
 CONF_CPM_MEM:     equ 63  
 
-CONF_DISK_RETRIES: equ 8
+CONF_DISK_RETRIES: equ 10

@@ -763,12 +763,12 @@ DAT_DISK_MOTOR_DRIVE: db $00
 DAT_DISK_INT_SR0:      db 0
 DAT_DISK_INT_CYLINDER: db 0
 
-DAT_DISK_NUMBER:     db $ff   ; impossible drive so the first thing we do is recalibrate
-DAT_DISK_TRACK:      db 0
-DAT_DISK_TRACK_PHYS: db 0
-DAT_DISK_HEAD:       db 0
-DAT_DISK_SECTOR:     db 1
-DAT_DISK_DATAPTR:    dw DAT_CPM_HOSTBUFFER
+DAT_DISK_NUMBER:      db $ff   ; impossible drive so the first thing we do is recalibrate
+DAT_DISK_TRACK:       db 0
+DAT_DISK_TRACK_PHYS:  db 0
+DAT_DISK_HEAD:        db 0
+DAT_DISK_SECTOR:      db 1
+DAT_DISK_DATAPTR:     dw DAT_CPM_HOSTBUFFER
 
 DAT_DISK_RES_BUFFER: dc 7, $00
 

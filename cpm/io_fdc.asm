@@ -56,7 +56,7 @@ fdc_enableMotor:
     jp z, _fdc_enableMotor_turnOn ; no motor was enabled yet. do it now
     xor B
     bit 0, A
-    jp z, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
+    jp nz, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
     ; right motor was already on. we're done
     jp _fdc_enableMotor_end
     
@@ -77,6 +77,7 @@ _fdc_enableMotor_turnOn:
 
 _fdc_enableMotor_end:
     ; create timeout to disable motor again
+    ;  (or refresh an existing one)
     ld HL, fdc_disableMotor
     ld A, 64*3  ; turn off motor after 3 seconds
     call rtc_setTimeout
@@ -221,11 +222,14 @@ fdc_seek:
     rla
     ld (DAT_DISK_HEAD), A
 
+    ; we probably have to check if the disk changed here. since the CBIOS always
+    ;  recalibrates the drive after changing drive number this is not strictly 
+    ;  neccesary but could cause some errors if we change something later
+
     ; did the physical track change? if not there's no need to issue a command
     ld A, (DAT_DISK_TRACK_PHYS)
     cp B
     jp z, _fdc_seek_end
-
 
     call fdc_preCommandCheck
     ret c

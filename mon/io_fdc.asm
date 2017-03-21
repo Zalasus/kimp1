@@ -118,7 +118,7 @@ fdc_enableMotor:
     jp z, _fdc_enableMotor_turnOn ; no motor was enabled yet. do it now
     xor B
     bit 0, A
-    jp z, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
+    jp nz, _fdc_enableMotor_turnOn ; wrong drive was selected. need to spin up other motor
     ; right motor was already on. we're done
     jp _fdc_enableMotor_end
     
