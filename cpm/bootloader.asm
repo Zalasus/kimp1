@@ -61,6 +61,8 @@ _bootloader_loop:
     ld (DAT_CURRENT_SECTOR), A
     cp 10     ; check if carry to next track is neccessary
     jp nz, _bootloader_loop
+
+    ; carry over to next track
     ld A, 1
     ld (DAT_CURRENT_SECTOR), A
     ld A, (DAT_CURRENT_TRACK)

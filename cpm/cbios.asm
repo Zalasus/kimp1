@@ -124,7 +124,7 @@ str_biosPanic:
 boot:
     ld SP, ccp
 
-    call lowLevelSetup  ; will redifine IVRs and turn off ROM mapping
+    call lowLevelSetup  ; will redefine IVRs and turn off ROM mapping
 
     ; print logon string
     ld HL, str_welcome
@@ -147,12 +147,11 @@ wboot:
 
     xor A
     ld (DAT_DISK_NUMBER), A
-    ld (DAT_DISK_TRACK), A
-    ld A, 2   ; sector 1 stores bootloader. ignore it
-    ld (DAT_DISK_SECTOR), A
-
     call fdc_recalibrate
     jp c, bootFail
+
+    ld A, 2   ; sector 1 stores bootloader. ignore it
+    ld (DAT_DISK_SECTOR), A
 
     ld C, 0   ; number of sectors loaded
 
@@ -211,7 +210,7 @@ gocpm:
     ld HL, bdos
     ld ($0006), HL
 
-    ld BC, $0080  ; initalize default DMA address
+    ld BC, $0080  ; initialize default DMA address
     call setdma
 
     call printNewLine
@@ -645,6 +644,10 @@ _diskCommand_noDiskChange:
     ld A, (DAT_CPM_HOST_SECTOR)
     inc A  ; CP/M seems to give 0-based sector addresses here
     ld (DAT_DISK_SECTOR), A
+
+    ; restore dataptr in case it changed (like after a warm boot)
+    ld HL, DAT_CPM_HOSTBUFFER
+    ld (DAT_DISK_DATAPTR), HL
 
     call fdc_seek
     jp c, _diskCommand_error
