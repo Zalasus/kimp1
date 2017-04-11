@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.5
+;           VERSION 0.6
 ;
 ;       for the KIMP1 system
 ;
@@ -19,6 +19,8 @@
 
 
 ;-------------- PRE-ASSEMBLY CONFIGURATION -------------------
+
+CONF_VERSION:          equ $06  ; version number
 
 ; General configuration 
 CONF_INCLUDE_HELP:     equ 1    ; set to zero to save a few bytes of ROM
@@ -79,6 +81,7 @@ MON_DECIMAL:            equ '#'
 MON_ANSWER:             equ '$'
 MON_ARGUMENT_SEPERATOR: equ ','
 MON_ADDRESS_SEPARATOR:  equ ':'
+MON_STRING:             equ $22
 
 MON_INPUT_BUFFER_SIZE:  equ $100
 
@@ -115,7 +118,7 @@ endif
     jp seek
     jp readData
     jp writeData
-    jp 0
+    jp extendedFunc
     jp monitorPrompt_loop
 
 
@@ -765,6 +768,20 @@ writeData:
 
 
 
+; Extended jump table call. Takes desired function in A.
+;  Returns with carry set in case of error.
+extendedFunc:
+    cp $00 ; get version
+    jp z, _extended_version
+
+    ; invalid function. return with error
+    jp setCarryReturn
+
+_extended_version:
+    ld A, CONF_VERSION
+    jp resetCarryReturn
+
+
 ;------------------------- MAIN MONITOR LOOP --------------------------------     
    
 monitorStart:
@@ -819,6 +836,7 @@ _monitor_init_noext:
     call clearScreen
   
 monitor_welcome:
+    call printNewLine
     ld HL, str_welcome ; print welcome message
     call printString
 

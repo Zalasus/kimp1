@@ -78,12 +78,7 @@ _command_disk_info_loop:
 
     ld HL, str_disktoolDiskchange
     call printString
-    in A, (IO_EBCR)
-    and [1 << BIT_EBCR_DSKCHG]
-    ld A, $00
-    jp z, _command_disk_info_dskChg
-    ld A, $01
-_command_disk_info_dskChg:
+    call fdc_getDiskChange
     call printHex
 
     call printNewLine
@@ -202,7 +197,7 @@ _command_disk_rw_loop:
 
 
 _command_disk_format:
-    xor A
+    ld A, $E5  ; default filler for creating CP/M filesystems
     ld (DAT_DISK_FILLER), A
 
     call skipWhites  ; did user provide filler parameter?

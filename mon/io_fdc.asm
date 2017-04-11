@@ -161,6 +161,29 @@ fdc_disableMotor:
 
 
 
+; Reads disk change status of currently selected drive. Returns with A=1 if /DISKCHG was high,
+;  else A=0.
+fdc_getDiskChange:
+    ; need to enable motor to read bit
+    ld A, (DAT_DISK_NUMBER)
+    and $01
+    or [1 << BIT_FDC_MOTOR_ENABLE_1] | [1 << BIT_FDC_MOTOR_ENABLE_2] | [1 << BIT_FDC_SOFT_RESET] | [1 << BIT_FDC_DMA_ENABLE]
+    out (IO_FDC_OPER), A
+
+    in A, (IO_EBCR)
+    and [1 << BIT_EBCR_DSKCHG]
+    ld B, $00
+    jp z, _fdc_getDiskChange_disable
+    ld B, $01
+
+_fdc_getDiskChange_disable:
+    call fdc_disableMotor
+
+    ld A, B
+    ret
+    
+
+
 ; Will execute the routine stored in HL repeatedly (for a maximum number
 ;  of times) until it executes without errors. If a write-protect error
 ;  is reported, it returns immediatly. If the maximum number of tries

@@ -5,7 +5,7 @@
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.5 FOR KIMP1', $0A
+    db 'MINIMON 0.6 FOR KIMP1', $0A
     db 'COPYLEFT 2017 ZALASUS', $0A
     db ' ALL WRONGS REVERSED', $0A, $00
     
@@ -96,7 +96,7 @@ str_disktoolHelp:
     db 's S      Select sector S', $0A
     db 'r A[,N]  Read N sectors to A', $0A
     db 'w A[,N]  Write N sectors from A', $0A
-    db 'f [X]    Format selected disk. Use filler X', $0A, $00
+    db 'f [X]    Format selected disk. Use filler X (default E5)', $0A, $00
 
 endif
     

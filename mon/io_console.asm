@@ -1,7 +1,7 @@
 
 ;-------------------------- CONSOLE IO --------------------------------
 
-; Prints the character stored in A. Trashes B.
+; Prints the character stored in A. Trashes B. A is preserved.
 printChar:
 conout:
     ld B, A
