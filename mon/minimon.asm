@@ -1,7 +1,7 @@
 
 ;-----------------------------------
 ;             MINIMON
-;           VERSION 0.6
+;           VERSION 0.7
 ;
 ;       for the KIMP1 system
 ;
@@ -20,7 +20,7 @@
 
 ;-------------- PRE-ASSEMBLY CONFIGURATION -------------------
 
-CONF_VERSION:          equ $06  ; version number
+CONF_VERSION:          equ $07  ; version number
 
 ; General configuration 
 CONF_INCLUDE_HELP:     equ 1    ; set to zero to save a few bytes of ROM
@@ -166,8 +166,8 @@ _setup_loop:
     jp nz, _setup_loop    
 endif
     
-    ld HL, $0000  
-    ld SP, HL   ; init stackpointer to end of memory
+    ld SP, (RAM_END+1) % $10000   ; init stackpointer to end of memory
+    ld HL, main
     push HL   ; catch any stack underflows
 
     ; init interrupt handlers
@@ -386,7 +386,7 @@ printAddressToken:
 ;  the carry bit is reset.
 parseHexWord:
     ld DE, 0
-    ld A, C
+    ld A, (HL)
     or A  ; compare with zero
     jp z, setCarryReturn ; no bytes for parsing -> error return
     
@@ -421,7 +421,8 @@ _parseHexWord_loop:
     ld D, A
     
     inc HL
-    dec C
+    ld A, (HL)
+    or A
     jp z, resetCarryReturn ; no bytes remaining -> return
     
     jp _parseHexWord_loop
@@ -438,7 +439,7 @@ _parseHexWord_loop:
 ;  the carry bit is reset.
 parseDecWord:
     ld DE, 0
-    ld A, C
+    ld A, (HL)
     or A  ; compare with zero
     jp z, setCarryReturn ; no bytes for parsing -> error return
     
@@ -456,7 +457,7 @@ _parseDecWord_loop:
     ; we have parsed a valid digit
     
     ; multiply DE by 10
-    ex DE,HL
+    ex DE, HL
     push DE
     ld D, H
     ld E, L
@@ -466,19 +467,20 @@ _parseDecWord_loop:
     add HL, DE ; add two times ( temp = temp + 2* value)
     add HL, DE
     pop DE
-    ex DE,HL
+    ex DE, HL
     
     ; add loaded digit to DE
-    ld B,A
-    ld A,E
+    ld B, A
+    ld A, E
     add B
-    ld E,A
-    ld A,D ; add carry bit to D
-    adc A,0
-    ld D,A
+    ld E, A
+    ld A, D ; add carry bit to D
+    adc A, 0
+    ld D, A
     
     inc HL
-    dec C
+    ld A, (HL)
+    or A
     jp z, resetCarryReturn ; no bytes remaining -> return
     
     jp _parseDecWord_loop
@@ -495,7 +497,6 @@ parseNumber:
     
     ; we have a decimal indicator
     inc HL ; throw the indicator away
-    dec C
     
     call parseDecWord
     ret ; carry bit is still set in case of error
@@ -519,14 +520,13 @@ setCarryReturn:
     
     
    
-; increments HL and decrements C while (HL) is a whitespace character
+; increments HL while (HL) is a whitespace character
 skipWhites:
     ld A,(HL)
     cp TERM_SPACE ; check if char is == SPACE
     ret nz
     ;char was == SPACE -> skip char
     inc HL
-    dec C
     jp skipWhites
     
     
@@ -542,10 +542,9 @@ expression:
     ret c ; syntax error    
 
 _expression_loop:
-    ld A, C ; chars remaining?
+    ld A, (HL) ; chars remaining that are valid expression syntax?
     or A
     jp z, _expression_end
-    ld A, (HL)
     cp '+'
     jp z, _expression_add
     cp '-'
@@ -553,7 +552,6 @@ _expression_loop:
     
     push DE
     inc HL
-    dec C
     call _expression_term
     jp c, _expression_errorStackFix  ; syntax error
     ld (DAT_EXPR_WORDSTOR), HL ; save HL
@@ -566,7 +564,6 @@ _expression_loop:
 _expression_add:
     push DE
     inc HL
-    dec C
     call _expression_term
     jp c, _expression_errorStackFix ; syntax error
     ld (DAT_EXPR_WORDSTOR), HL
@@ -587,17 +584,15 @@ _expression_term:
     ret c
 
 _expression_term_loop:
-    ld A, C ; chars remaining?
+    ld A, (HL) ; chars remaining that are valid term syntax?
     or A
     jp z, _expression_factor_end  ; skips whites, resets carry and returns
-    ld A, (HL)
     cp '*'
     jp nz, _expression_factor_end
     ; No division yet supported. I don't see how that would be useful    
 
     push DE
     inc HL
-    dec C
     call _expression_factor
     jp c, _expression_errorStackFix  ; syntax error
     ld (DAT_EXPR_WORDSTOR), HL ; save HL
@@ -624,19 +619,16 @@ _expression_factor:
     
 _expression_factor_subexpression:
     inc HL
-    dec C
     call expression
     ret c ; syntax error
     ld A, (HL)
     cp ')'    ; expect closing parentheses
     jp nz, setCarryReturn ; syntax error
     inc HL
-    dec C
     jp _expression_factor_end
     
 _expression_factor_answer:
     inc HL
-    dec C
     ld DE, (DAT_EXPR_ANSWER)
     
 _expression_factor_end:
@@ -787,12 +779,20 @@ extendedFunc:
     cp $00 ; get version
     jp z, _extended_version
 
+    cp $10 ; print time
+    jp z, _extended_printTime
+
     ; invalid function. return with error
     jp setCarryReturn
 
 _extended_version:
     ld A, CONF_VERSION
     jp resetCarryReturn
+
+_extended_printTime:
+    call rtc_printTime
+    jp resetCarryReturn
+
 
 
 ;------------------------- MAIN MONITOR LOOP --------------------------------     
@@ -872,19 +872,18 @@ monitorPrompt_loop:
     
     ld HL, DAT_INPUT_BUFFER ; this is where we want to store the read bytes
     call readString ; read user input
+
+    call skipWhites ; skip whitespace at beginning of input
     
-    ld A, C 
+    ld A, (HL) 
     or A
-    jp z, monitorPrompt_loop ; user entered nothing. prompt again
+    jp z, monitorPrompt_loop  ; user entered nothing. prompt again
     
     call printNewLine ; insert a new line after user entered a command
-    
-    call skipWhites ; skip whitespace at beginning of command
 
     ; process user input
     ld B, (HL) ; load fist byte entered
     inc HL ; move HL to next byte
-    dec C
     
     call skipWhites
     
@@ -991,7 +990,7 @@ _command_print_loop:
     call printNewLine
     
     call skipWhites
-    ld A, C ; chars remaining?
+    ld A, (HL) ; chars remaining?
     or A
     jp nz, _command_print_loop
     

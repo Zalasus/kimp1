@@ -1,55 +1,51 @@
 
-; Prints contents of memory location given by parameter
-;  (may be an address range)
+;-------------------------------
+;       Examine command
+;-------------------------------
+
+; Prints contents of memory location given by argument 1.
+;  Optional argument 2 is amount of bytes to print. Default is 1 byte.
+
 command_examine:
     call expression
     jp c, monitor_syntaxError
     call skipWhites
     push DE
-    
-    ld A, C
-    or A  ; compare with zero
-    jp z, _command_examine_print ; no more arguments -> start printing
 
-    ld A, (HL) ; load remaining char
+    ld DE, 1  ; default is to print 1 byte
+
+    ld A, (HL)
+    or A
+    jp z, _command_examine_print  ; no more arguments. start printing
+
+    ; characters remaining. check for second argument
     cp MON_ARGUMENT_SEPERATOR
     jp nz, monitor_syntaxError ; remaining char is not , -> error
-    
-    inc HL ; move pointer to next byte
-    dec C
+
+    inc HL
     call skipWhites
     
     call expression
     jp c, monitor_syntaxError
     
 _command_examine_print:
-    inc DE ; since we want the upper address to be inclusive
-    
     pop HL
-    ; start address is now stored in HL, end address in DE
+    ; start address is now stored in HL, byte count in DE
     
     ld C, CONF_COMM_EXAMINE_BYTES_PER_LINE + 1 ; counter for bytes on line (to insert LF after 16 bytes)
 
     ; print starting address token
     call printAddressToken
 
-    ; if end address was ffff (is now 0) we need to skip the first loop check
+_command_examine_loop:
+    ; byte count hit zero?
     ld A, D
     or E
-    jp z, _command_examine_cont1
-    
-_command_examine_loop:
-    ; reached end address yet?
-    ld A, H
-    cp D
-    jp nz, _command_examine_cont1
-    ld A, L
-    cp E
     jp z, _command_examine_end
-_command_examine_cont1:
+
+    ; decrement count of bytes on line (do this here so we don't print address after last byte)
     dec C
     jp z, _command_examine_lf
-_command_examine_cont2:
 
     ; check if user terminated printing
     call hasChar
@@ -63,6 +59,7 @@ _command_examine_cont2:
     call printChar
     
     inc HL
+    dec DE
     
     jp _command_examine_loop
     

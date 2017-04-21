@@ -1,10 +1,10 @@
 
 ;---------------------------------
-;
-;  Hex input command for Minimon
-;
+;       Hex input command
 ;---------------------------------
 
+; Reads Intel HEX from the terminal until end record is found.
+;  No arguments.
 
 command_input_hex:
     ld HL, str_readingHex

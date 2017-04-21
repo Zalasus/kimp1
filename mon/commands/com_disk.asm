@@ -1,10 +1,10 @@
 
 ;------------------------------
-;
-;   Disk command for Minimon
-;
+;        Disk command
 ;------------------------------
 
+; Tool with options to read and write sectors and to format
+;  floppy disks. Needs extension board.
 
 command_disk:
     ld A, (DAT_EXT_INITIALIZED)

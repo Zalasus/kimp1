@@ -21,3 +21,4 @@ MINIMON_J_BACK_TO_PROMPT: equ $002D
 
 
 MINIMON_EXT_GETVERSION:   equ $00 ; A = version number
+MINIMON_EXT_PRINTTIME:    equ $10 ; prints time from RTC to console

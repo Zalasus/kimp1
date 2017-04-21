@@ -1,25 +1,26 @@
+;-------------------------------
+;       Register command
+;-------------------------------
 
+; Prints the saved register buffer in human readable format or modifies it.
+;  TODO: Quick and dirty routine. Surely to be compacted somehow.
 
-; Prints the saved register buffer in human readable format or
-;  modifies it.
-;  NOTE: Quick and dirty routine. Surely to be compacted somehow.
 command_register:
+    ; did user supply arguments?
     call skipWhites
-    ld A, C
+    ld A, (HL)
     or A
-    jp z, _command_register_print
+    jp z, _command_register_print  ; no. just print stash.
 
     ; user supplied arguments -> modify stash
 _command_register_modLoop:
     ld B, (HL) 
     inc HL
-    dec C
     call skipWhites
     ld A, (HL)
     cp '='
     jp nz, monitor_syntaxError
     inc HL
-    dec C
     ld A, B
 
     ; determine which register to modify
@@ -79,7 +80,7 @@ _command_register_mod16:
 
 _command_register_modLoopCheck:
     call skipWhites
-    ld A, C
+    ld A, (HL)
     or A
     jp nz, _command_register_modLoop
     ;jp monitorPrompt_loop

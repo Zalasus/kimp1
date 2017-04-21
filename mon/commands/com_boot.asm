@@ -1,6 +1,10 @@
+;-------------------------------
+;         Boot command
+;-------------------------------
 
+; Loads the first sector from drive A into memory and jumps to the loaded code.
+;  No arguments.
 
-; Loads the first sector from drive A into memory and jumps to the loaded code
 command_boot:
     ; first, check if extension board is plugged in
     ld A, (DAT_EXT_INITIALIZED)

@@ -1,11 +1,11 @@
 
 
 ;---------------------------------
-;
-;  Hex output command for Minimon
-;
+;      Hex output command
 ;---------------------------------
 
+; Dumps memory at argument 1 as Intel HEX. Optional argument 2 is
+;  amount of bytes to print. Default 1 byte.
 
 command_output_hex:
     call expression
@@ -13,36 +13,36 @@ command_output_hex:
     call skipWhites
     push DE
     
-    ld A, C
-    or A  ; compare with zero
+    ld DE, 1 ; default byte count is 1 byte
+
+    ld A, (HL)
+    or A
     jp z, _ohex_go ; no more arguments. just print this one byte
 
-    ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
     jp nz, monitor_syntaxError ; remaining char is not , -> error
     
     inc HL ; move pointer to next byte
-    dec C
     call skipWhites
     
     call expression
     jp c, monitor_syntaxError
 
 _ohex_go:
-    inc DE  ; to make end address inclusive
-    
     pop HL
 
-    ; start address HL, end address DE, C used for checksum
+    ; start address HL, byte count DE, C used for checksum
 
-    ; check if range contains bytes. if user entered the same address twice, skip data record
-    ;  and go straight to eof
+    ; check if user entered 0 bytes
     ld A, D
-    cp H
-    jp nz, _ohex_data
-    ld A, E
-    cp L
-    jp z, _ohex_eof
+    or E
+    jp z, _ohex_eof ; zero bytes entered. print end record right away
+
+    ; the following code was written with DE=end address. I can't be bothered to
+    ;  change it right now, so we emulate that by adding HL to DE. TODO: change to byte counting
+    ex DE, HL
+    add HL, DE
+    ex DE, HL
 
 _ohex_data:
     ld C, $00  ; initialize C for checksum

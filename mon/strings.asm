@@ -5,7 +5,7 @@
 ; The printing routine substitutes CRLF when needed.
 
 str_welcome:
-    db 'MINIMON 0.6 FOR KIMP1', $0A
+    db 'MINIMON 0.7 FOR KIMP1', $0A
     db 'COPYLEFT 2017 ZALASUS', $0A
     db ' ALL WRONGS REVERSED', $0A, $00
     
@@ -70,7 +70,7 @@ str_help:
     db 'Whitespace is always optional', $0A
     db 'Defined commands:', $0A
     db 'h          Show this message', $0A
-    db 'e S [,E]   Examine address S to E', $0A
+    db 'e X [,C]   Examine C bytes starting at address X', $0A
     db 's X        Store to address X', $0A
     db 'x[!] X     Call to address X. Use x! to jump to X instead', $0A
     db 'f [R=X]*   Print or modify flag and register stash', $0A
@@ -80,7 +80,7 @@ str_help:
     db 'v          Show version', $0A
     db 'p X*       Parses and prints X', $0A
     db 'i          Starts reading of Intel HEX', $0A
-    db 'o S [,E]   Dumps S to E as Intel HEX', $0A
+    db 'o X [,C]   Dumps C bytes starting at X as Intel HEX', $0A
     db 'd *        Disk tool. Use dh for help', $0A
     db 'r          Soft reset', $0A
     db 'Arguments in square brackets optional', $0A
@@ -107,5 +107,5 @@ str_disktoolDiskchange:
     db 'DSKCHG=', $00
 
 str_cls:
-    db $1B, '[2J', $00 ; the VT100 way to clear screen
+    db $1B, '[2J', $1B, '*', $00  ; this should work on both ANSI and TeleVideo 910-compatibles
 

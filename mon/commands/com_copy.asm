@@ -1,7 +1,10 @@
 
+;-------------------------------
+;       Copy command
+;-------------------------------
 
+; Copies block of memory.
 
-; Copies block of memory
 command_copy:
     call expression ; parse source address
     jp c, monitor_syntaxError
@@ -11,8 +14,8 @@ command_copy:
     ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
     jp nz, monitor_syntaxError ; remaining char is not , -> error
+
     inc HL
-    dec C
     call skipWhites
     
     call expression ; parse destination address
@@ -23,8 +26,8 @@ command_copy:
     ld A, (HL) ; load remaining char
     cp MON_ARGUMENT_SEPERATOR
     jp nz, monitor_syntaxError ; remaining char is not , -> error
+
     inc HL
-    dec C
     call skipWhites
     
     call expression ; parse byte count

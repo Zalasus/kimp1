@@ -1,7 +1,11 @@
 
+;-------------------------------
+;       Store command
+;-------------------------------
 
 ; Used to enter an arbitrary amount of bytes starting from a given 
 ;  address (first argument). Accepts only hex chars.
+
 command_store:
     call expression
     jp c, monitor_syntaxError
