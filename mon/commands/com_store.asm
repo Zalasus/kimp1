@@ -113,17 +113,7 @@ _command_store_stringLoop:
     ; now echo char if it is printable.
     ;  cheap check is to look if one of the bits 5,6 or 7 is set.
     ;  (just need to catch DEL char)
-    cp TERM_DEL
-    jp z, _command_store_charNotPrint
-    ld B, A
-    and $E0
-    ld A, B
-    jp nz, _command_store_charPrint
-_command_store_charNotPrint:
-    ; char is not printable. replace with space
-    ld A, TERM_SPACE
-_command_store_charPrint:
-    call printChar
+    call printPrintable
     ld A, TERM_SPACE
     call printChar
     call printChar

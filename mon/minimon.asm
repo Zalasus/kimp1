@@ -768,6 +768,19 @@ writeData:
 
 
 
+; Prints char in A if it is printable ASCII. Else, prints '.'
+printPrintable:
+    cp $20
+    jp m, _printPrintable_noPrint ; char is < $20
+    cp $7F
+    jp p, _printPrintable_noPrint ; char is >= $7F
+    jp printChar
+_printPrintable_noPrint:
+    ld A, '.'
+    jp printChar
+
+
+
 ; Extended jump table call. Takes desired function in A.
 ;  Returns with carry set in case of error.
 extendedFunc:
